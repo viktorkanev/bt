@@ -7,6 +7,8 @@
     footy predict    predictions + value for upcoming fixtures
     footy matchup    predict any match-up from the latest ratings
     footy tune       grid-search rating hyper-parameters on the development window
+    footy confirm    re-run the pre-registered market-surprise test (docs/PREREGISTRATION.md)
+    footy forward    score the frozen rules on matches after 2026-09-03 (forward test)
     footy all        fetch -> build -> report
 """
 
@@ -119,6 +121,27 @@ def _tune(args) -> None:
     print(r.groupby("model").head(3).to_string(index=False))
 
 
+def _confirm(args) -> None:
+    from .research import confirm
+
+    r = confirm.run(args.window)
+    print(json.dumps({k: r[k] for k in ("H1", "H2", "H3", "H4", "holm_adjusted_p")},
+                     indent=2, default=float))
+
+
+def _forward(args) -> None:
+    from .research import forward
+
+    if args.freeze:
+        if forward.FROZEN.exists() and not args.force:
+            print(f"{forward.FROZEN} already exists; frozen rules must not change (use --force)")
+            return
+        forward.freeze()
+    r = forward.evaluate()
+    print(json.dumps(r, indent=2, default=float))
+    print(f"bets written to {forward.OUT_DIR}")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="footy", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -165,6 +188,15 @@ def main(argv: list[str] | None = None) -> int:
     tu = sub.add_parser("tune", help="tune rating hyper-parameters")
     tu.add_argument("--models", help="subset, e.g. elo,pi")
     tu.set_defaults(func=_tune)
+
+    c = sub.add_parser("confirm", help="re-run the pre-registered market-surprise test")
+    c.add_argument("--window", default="holdout", choices=["dev", "holdout"])
+    c.set_defaults(func=_confirm)
+
+    fw = sub.add_parser("forward", help="score frozen rules on matches after the freeze date")
+    fw.add_argument("--freeze", action="store_true", help="(re)fit and write frozen rules")
+    fw.add_argument("--force", action="store_true")
+    fw.set_defaults(func=_forward)
 
     a = sub.add_parser("all", help="fetch -> build -> report")
     a.add_argument("--source", default="auto", choices=["auto", "football-data", "mirror"])

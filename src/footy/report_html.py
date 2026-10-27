@@ -50,6 +50,16 @@ def render(out_dir: Path, standalone: bool = True) -> str:
         "capped": _records(out_dir / "capped_strategies.csv"),
         "upcoming": _records(out_dir / "upcoming.csv")[:300],
     }
+    research = {}
+    rdir = out_dir.parent / "research"
+    for w in ("dev", "holdout"):
+        f = rdir / w / "results.json"
+        if f.exists():
+            research[w] = json.loads(f.read_text())
+    ff = rdir / "forward" / "summary.json"
+    if ff.exists():
+        research["forward"] = json.loads(ff.read_text())
+    data["research"] = research
     payload = json.dumps(_clean(data), default=str).replace("</", "<\\/")
     body = TEMPLATE.replace("__DATA__", payload)
     if not standalone:
@@ -136,6 +146,8 @@ th, td { padding: 7px 10px; text-align: right; white-space: nowrap; border-botto
 th { font: 600 12px/1.2 var(--body); color: var(--muted); background: var(--surface-2); position: sticky; top: 0; }
 th:first-child, td:first-child, td.l, th.l { text-align: left; }
 tbody tr:last-child td { border-bottom: 0; }
+td.wraptext { white-space: normal; min-width: 150px; }
+td .pill { vertical-align: middle; margin-top: 0; }
 td.code { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
 td.cell { position: relative; }
 .bar-pos, .bar-neg { display: inline-block; height: 8px; border-radius: 2px; vertical-align: middle; margin-left: 6px; }
@@ -166,7 +178,7 @@ footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--rule);
       Parameters were chosen on the development window and judged on later seasons the models never saw.</p>
   </header>
   <nav class="chips" aria-label="Sections">
-    <a href="#verdict">Verdict</a><a href="#accuracy">Model vs market</a><a href="#leagues">Lower leagues</a>
+    <a href="#verdict">Verdict</a><a href="#idea">Skill vs luck test</a><a href="#accuracy">Model vs market</a><a href="#leagues">Lower leagues</a>
     <a href="#strategies">Strategies</a><a href="#grid">Overfitting check</a><a href="#ratings">Ratings</a>
     <a href="#upcoming">Upcoming</a><a href="#method">Method</a>
   </nav>
@@ -178,6 +190,22 @@ footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--rule);
       <div class="tiles" id="tiles"></div>
     </div>
     <ul class="findings" id="findings"></ul>
+  </section>
+
+  <section id="idea">
+    <h2>New idea: does the market confuse luck with skill?</h2>
+    <p class="sub">For every team we track how it has done against what the bookmaker expected, then split that surprise into results, shot dominance,
+      finishing luck (goals beyond what shots on target justify) and goalkeeper luck. The rules were written down and committed before the 2016–2026 holdout was run once.</p>
+    <div class="grid2">
+      <div class="card"><h3>Effect on the next match, by part</h3>
+        <p class="sub" style="font-size:13px">t-statistic of each part in predicting goal difference beyond the market. Beyond ±2 is significant. Negative means the market over-reacts.</p>
+        <div class="legend" id="h1Legend"></div><div id="h1Chart"></div></div>
+      <div class="card"><h3>What the luck effect is worth</h3>
+        <p class="sub" style="font-size:13px">Handicap bets on the holdout, re-priced at different bookmaker margins. A projection, not a test.</p>
+        <div class="tablewrap"><table id="projTable"></table></div>
+        <p class="sub" style="font-size:13px" id="fwdNote"></p></div>
+    </div>
+    <div class="tablewrap"><table id="hypTable"></table></div>
   </section>
 
   <section id="accuracy">
@@ -442,6 +470,8 @@ streamlit run app/dashboard.py</pre>
   }
   const cap5 = (D.capped || []).find(r => r.strategy === 'blend_max' && Math.abs(r.max_edge - 0.05) < 1e-9);
   if (cap5) F.push(['bad', `1X2 profits at the best price come mostly from edges above 8%, where the top quote is usually stale or an outlier. Ignoring edges above 5%, the model+market strategy returns ${pct(cap5.hold_roi)} on the holdout (${int(cap5.hold_bets)} bets).`]);
+  const RH = (D.research || {}).holdout;
+  if (RH) F.push(['info', `New, pre-registered: bookmakers over-react to finishing and goalkeeper luck (holdout t = ${RH.H1.t.d_fin_luck} and ${RH.H1.t.d_gk_luck}). The effect is real but smaller than Bet365's margin; the best rule made ${pct(RH.H3.roi)} on Asian handicaps (not significant).`]);
   const posHold = (D.strategies || []).filter(s => s.hold_roi > 0 && s.hold_bets >= 200);
   F.push([posHold.length ? 'good' : 'bad', posHold.length ? `${posHold.length} of ${D.strategies.length} fixed strategies made a profit on the holdout: ${posHold.map(s => `${s.name} (${pct(s.hold_roi)})`).join(', ')}.` : `None of the ${(D.strategies || []).length} fixed strategies made a profit on the holdout.`]);
   const g = (D.grid || []).filter(r => r.dev_bets >= 300 && r.hold_bets >= 100);
@@ -492,6 +522,15 @@ streamlit run app/dashboard.py</pre>
     legend('tierLegend', [['Development', css('--s1')], ['Holdout', css('--s2')]]);
     columns($('tierChart'), tg, [{ key: 'dev', color: css('--s1'), name: 'Development' }, { key: 'hold', color: css('--s2'), name: 'Holdout' }],
       { fmt: (v) => (v * 100).toFixed(0) + '%', tip: (gr, s) => `<b>${gr.label}</b><div>${s.name}: <b>${pct(gr[s.key])}</b></div><div>${int(s.key === 'dev' ? gr.dn : gr.hn)} bets</div>` });
+    // research: H1 t-stats dev vs holdout
+    const RS = D.research || {};
+    if (RS.dev && RS.holdout) {
+      const nm = { d_surp_pts_10: 'Results', d_surp_sot_10: 'Shots', d_fin_luck: 'Finishing', d_gk_luck: 'Keeper' };
+      const grp = Object.keys(nm).map(k => ({ label: nm[k], dev: RS.dev.H1.t[k], hold: RS.holdout.H1.t[k] }));
+      legend('h1Legend', [['Development 2009–15', css('--s1')], ['Holdout 2016–26', css('--s2')]]);
+      columns($('h1Chart'), grp, [{ key: 'dev', color: css('--s1'), name: 'Development' }, { key: 'hold', color: css('--s2'), name: 'Holdout' }],
+        { fmt: (v) => Number(v).toFixed(0), tip: (gr, sd) => `<b>${gr.label}</b><div>${sd.name}: t = <b>${Number(gr[sd.key]).toFixed(2)}</b></div>` });
+    }
     // edge bands
     const bs = $('bandStrat').value, B = (D.bands || []).filter(r => r.strategy === bs);
     const blabels = [...new Set(B.map(r => r.band_lo))].sort((a, b) => a - b);
@@ -544,6 +583,24 @@ streamlit run app/dashboard.py</pre>
       (D.strategies || []).map(s => `<tr><td class="l">${esc(s.name)}<div class="muted" style="font-size:11.5px">${esc(s.label)}</div></td><td>${int(s.dev_bets)}</td><td>${pct(s.dev_roi)}</td><td>${int(s.hold_bets)}</td><td><b>${pct(s.hold_roi)}</b></td>
         <td>${pct(s.hold_roi_lo)} to ${pct(s.hold_roi_hi)}</td><td>${num(s.hold_p_value, 3)}</td><td>${num(s.hold_avg_odds)}</td><td>${s.hold_max_drawdown_units == null ? '–' : num(s.hold_max_drawdown_units, 0) + 'u'}</td></tr>`).join('') + '</tbody>';
   }
+  function research() {
+    const RS = D.research || {};
+    if (!RS.holdout) { $('idea').hidden = true; return; }
+    const dv = RS.dev || {}, hv = RS.holdout, adj = hv.holm_adjusted_p || {};
+    const label = { H1: 'Market over-reacts to luck (effect test)', H2: 'Bet 1X2 at Bet365, edge ≥ 3%', H3: 'Bet Asian handicap at Bet365', H4: '1X2 at Bet365 using best-price data, edge ≥ 4%' };
+    const pass = (k) => adj[k] < 0.05 && (k === 'H1' ? hv.H1.signs_as_predicted : hv[k].roi > 0);
+    const cell = (k, w) => k === 'H1' ? `${int(w.H1.n)} matches · joint p ${w.H1.joint_p < 1e-6 ? '< 0.000001' : num(w.H1.joint_p, 4)}` : `${pct(w[k].roi)} · ${int(w[k].bets)} bets`;
+    $('hypTable').innerHTML = `<thead><tr><th class="l">Pre-registered hypothesis</th><th class="l">Verdict</th><th>Holdout 2016–26</th><th>Holm p</th><th>Development 2009–15</th></tr></thead><tbody>` +
+      ['H1', 'H2', 'H3', 'H4'].map(k => `<tr><td class="l wraptext">${esc(label[k])}</td>
+        <td class="l"><span class="pill ${pass(k) ? 'good' : 'bad'}" aria-hidden="true">${pass(k) ? '✓' : '×'}</span> ${pass(k) ? 'Confirmed' : 'Failed'}</td>
+        <td><b>${cell(k, hv)}</b></td><td>${adj[k] < 0.001 ? '< 0.001' : num(adj[k], 3)}</td><td>${dv[k] ? cell(k, dv) : '–'}</td></tr>`).join('') + '</tbody>';
+    const P = hv.H3_margin_projection || [];
+    $('projTable').innerHTML = `<thead><tr><th class="l">Bookmaker margin</th><th>ROI</th><th>Bets</th></tr></thead><tbody>` +
+      P.map(r => `<tr><td class="l">${(r.margin * 100).toFixed(1)}%${Math.abs(r.margin - 0.036) < 1e-9 ? ' (Bet365, actual)' : Math.abs(r.margin - 0.02) < 1e-9 ? ' (Pinnacle-like)' : ''}</td><td>${pct(r.roi)}</td><td>${int(r.bets)}</td></tr>`).join('') + '</tbody>';
+    const fw = RS.forward;
+    $('fwdNote').textContent = fw && fw.played_after_freeze ? `Forward test since ${fw.since}: ${int(fw.played_after_freeze)} new matches scored.` :
+      'Forward test: rules frozen on 3 Sep 2026. No newer matches in this build; run footy fetch, build and forward on a machine with internet access to score them.';
+  }
   function capTable() {
     const C = D.capped || [];
     $('capTable').innerHTML = `<thead><tr><th class="l">Same strategies, ignoring edges above a cap</th><th>Cap</th><th>Dev bets</th><th>Dev ROI</th><th>Holdout bets</th><th>Holdout ROI</th><th>Holdout p</th></tr></thead><tbody>` +
@@ -583,7 +640,7 @@ streamlit run app/dashboard.py</pre>
   $('edgeStrat').addEventListener('change', () => { leagueTable(); drawAll(); });
   $('bandStrat').addEventListener('change', drawAll);
   $('lgSel').addEventListener('change', ratings);
-  leagueTable(); stratTable(); capTable(); gridTable(); ouTable(); ratings(); upcoming(); drawAll();
+  research(); leagueTable(); stratTable(); capTable(); gridTable(); ouTable(); ratings(); upcoming(); drawAll();
   $('foot').textContent = `Built by the footy engine. Development window ${S.dev_window ? S.dev_window.join(' to ') : ''}; holdout from ${holdStart}. Past results do not guarantee future returns.`;
   let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(drawAll, 150); });
   if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawAll);

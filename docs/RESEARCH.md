@@ -7,6 +7,9 @@ matches, 38 divisions, 2000-2026).
 
 ---
 
+> **Update:** a second, pre-registered study ("does the market confuse luck with
+> skill?") is in `docs/PREREGISTRATION.md` and `docs/SURPRISE_RESULTS.md`.
+
 ## 1. Findings from our backtests
 
 All numbers are out-of-sample. Models are re-trained each season on earlier data

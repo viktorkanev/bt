@@ -21,6 +21,21 @@ team-news accounts, literature and findings.
   -0.8%. This is a lead to paper-trade, not a proven edge (see
   `docs/RESEARCH.md` section 7).
 
+## New: does the market confuse luck with skill? (pre-registered)
+
+`docs/PREREGISTRATION.md` and `docs/SURPRISE_RESULTS.md`. Each team's recent
+performance against the bookmaker's own expectation is split into results,
+shot dominance, finishing luck and goalkeeper luck. Rules were committed to git
+before a one-shot holdout test on 2016-2026:
+
+* **Confirmed:** bookmakers over-react to finishing and goalkeeper luck
+  (holdout t = -5.2 and -4.7 over 68,270 matches, p = 1.7e-16).
+* **Not profitable at Bet365:** the three pre-registered betting rules failed
+  (best: Asian handicap +1.2% over 6,034 bets, not significant). Re-priced at a
+  2% margin the same bets project to +2.5% (development and holdout alike).
+* **Forward test:** `footy forward` scores two frozen rules on matches after
+  2026-09-03 with closing-line value against Pinnacle.
+
 ## Quick start
 
 ```bash
@@ -46,6 +61,8 @@ GitHub mirror of the same data (no closing odds, no fixtures).
 | `footy predict` | Probabilities, fair odds and value flags for upcoming fixtures |
 | `footy matchup E0 Arsenal Chelsea` | Predict any match-up from the latest ratings |
 | `footy tune` | Re-tune rating hyper-parameters on the 2003-2013 development window |
+| `footy confirm [--window dev\|holdout]` | Re-run the pre-registered market-surprise test |
+| `footy forward` | Score the frozen rules (`config/forward_rules.json`) on matches after 2026-09-03 |
 
 ### Dashboard pages
 

@@ -163,12 +163,14 @@ def _walk_ah(d: pd.DataFrame, test_years: list[int]) -> pd.DataFrame:
         stl = ah_settle((s["fthg"] - s["ftag"]).to_numpy(), s["ah_line"].to_numpy())
         stl = np.where(side == 0, stl, -stl)
         odds = np.where(side == 0, s["b365_ahh"], s["b365_aha"])
+        s["odds_other"] = np.where(side == 0, s["b365_aha"], s["b365_ahh"])
         s["pick"] = np.where(side == 0, "home ", "away ") + s["ah_line"].map(lambda x: f"{x:+.2f}")
         s["signal"], s["odds"] = sig, odds
         s["win"] = (stl > 0).astype(float)
         s["ret"] = np.where(stl > 0, stl * (odds - 1), stl)
+        s["settle"] = stl
         parts.append(s[["match_id", "date", "league", "tier", "home", "away", "pick", "signal",
-                        "odds", "win", "ret"]])
+                        "odds", "odds_other", "settle", "win", "ret"]])
     out = pd.concat(parts) if parts else pd.DataFrame()
     return out[out["signal"] >= H3_MIN_SIGNAL] if not out.empty else out
 
@@ -188,6 +190,24 @@ def summarise(b: pd.DataFrame, seed: int = 0, n_boot: int = 5000) -> dict:
             "roi_hi": float(np.percentile(boots, 97.5)), "p_value": float(stats.t.sf(t, n - 1)),
             "profit_units": float(r.sum()), "avg_odds": float(b["odds"].mean()),
             "hit_rate": float(b["win"].mean()), "max_drawdown_units": dd}
+
+
+def margin_projection(b: pd.DataFrame, margins=(0.036, 0.03, 0.02, 0.0)) -> list[dict]:
+    """Post-hoc: ROI of the same bets if the price carried a different margin.
+
+    Fair odds come from Bet365's two handicap prices with the margin removed
+    proportionally. Descriptive only; not part of the pre-registered test.
+    """
+    if b.empty:
+        return []
+    over = 1 / b["odds"] + 1 / b["odds_other"]
+    fair = b["odds"] * over
+    out = []
+    for m in margins:
+        o = fair / (1 + m)
+        r = np.where(b["settle"] > 0, b["settle"] * (o - 1), b["settle"])
+        out.append({"margin": m, "roi": float(np.mean(r)), "bets": int(len(r))})
+    return out
 
 
 def holm(pvals: dict[str, float]) -> dict[str, float]:
@@ -220,6 +240,7 @@ def run(window: str = "holdout", out_dir: Path = OUT_DIR, d: pd.DataFrame | None
     b4 = bets_1x2(pred_m, H4)
     b3 = _walk_ah(d, test_years)
     res["H2"], res["H3"], res["H4"] = summarise(b2), summarise(b3), summarise(b4)
+    res["H3_margin_projection"] = margin_projection(b3)
     res["holm_adjusted_p"] = holm({k: res[k]["p_value"] for k in ("H1", "H2", "H3", "H4")})
     # secondary (not part of the confirmatory test): H2 at other thresholds
     res["H2_thresholds"] = {f"{th:.2f}": summarise(bets_1x2(pred, Rule1X2("x", False, th)), n_boot=500)
