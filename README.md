@@ -1,0 +1,137 @@
+# footy: football rating, prediction and backtesting engine
+
+Tracks results across 38 divisions (England down to the National League,
+Scotland down to League Two, second tiers in Germany, Italy, Spain and France,
+16 other top flights), rates every team, predicts match probabilities, compares
+them with bookmaker prices and backtests betting strategies without look-ahead.
+
+**Open the report:** `reports/latest/index.html` (self-contained, works offline).
+**Research notes:** [`docs/RESEARCH.md`](docs/RESEARCH.md): metrics, data sources,
+team-news accounts, literature and findings.
+
+## Headline results (holdout seasons 2016/17 to Sep 2026)
+
+* Bookmaker prices (Bet365, margin removed) score RPS **0.2039**; the best
+  ratings-only model **0.2083**. Ratings alone lose money at every price tested.
+* 1X2 "best price" profits mostly come from stale or outlier quotes; with
+  edges above 5% ignored they shrink to about zero.
+* **Over/Under 2.5 in divisions 2-5** (model + market, best price, edge >= 3%):
+  **+7.5% ROI over 3,061 holdout bets** (95% range +3.8% to +11.1%), +3.0% in
+  development, positive in all 11 lower-tier European leagues. Top flights:
+  -0.8%. This is a lead to paper-trade, not a proven edge (see
+  `docs/RESEARCH.md` section 7).
+
+## Quick start
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[dashboard,dev]"
+
+footy all                 # fetch data -> ratings + walk-forward models -> report
+streamlit run app/dashboard.py
+```
+
+`footy fetch` downloads from football-data.co.uk (with Pinnacle and closing
+odds, plus upcoming fixtures). If that site is unreachable it falls back to a
+GitHub mirror of the same data (no closing odds, no fixtures).
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `footy fetch [--source auto\|football-data\|mirror] [--leagues E1,E2]` | Download results, stats, odds and upcoming fixtures |
+| `footy build [--no-gbm]` | Run all rating models over history, train walk-forward models, save predictions (about 8 minutes for 240k matches) |
+| `footy report` | Accuracy tables, strategy grid, dev/holdout backtests, HTML report in `reports/latest/` |
+| `footy backtest --market ou25 --model oublend --price max --edge 0.03 --leagues E1,E2,E3` | Backtest one rule and print the summary plus per-league table |
+| `footy predict` | Probabilities, fair odds and value flags for upcoming fixtures |
+| `footy matchup E0 Arsenal Chelsea` | Predict any match-up from the latest ratings |
+| `footy tune` | Re-tune rating hyper-parameters on the 2003-2013 development window |
+
+### Dashboard pages
+
+* **Backtest lab**: choose market (1X2, O/U 2.5, Asian handicap), model, price,
+  edge range, odds range, tiers/leagues, flat or Kelly staking; get the equity
+  curve, ROI with confidence range, p-value, per-league and per-season tables,
+  and a stale-price check.
+* **Model accuracy**: RPS by model and league, calibration plots.
+* **Match predictor**: any two teams, all models, scoreline grid, O/U and
+  handicap fair odds, team-news sliders.
+* **Upcoming & value**: fixture predictions with expected value at the best price.
+* **Ratings** and **Team news** (manual adjustments from `config/adjustments.yaml`).
+
+## How it works
+
+```
+data/            football-data.co.uk or mirror -> one schema (src/footy/data)
+   |
+ratings engine   day-by-day, pre-match only (src/footy/ratings)
+   |             Elo (self-adjusting home advantage), pi-ratings,
+   |             online Dixon-Coles on goals and on pseudo-xG (goals + shots on target),
+   |             shots / shots-on-target ratings, promotion & relegation re-basing
+   |
+walk-forward     per season, trained on earlier seasons only (src/footy/models)
+   |             ordered logit, logistic regression, gradient boosting,
+   |             model + market blend, over/under models; margin removal (Shin/power)
+   |
+backtester       value bets, flat or fractional Kelly, CLV, bootstrap ranges,
+   |             dev window picks / holdout judges (src/footy/backtest.py)
+   |
+report + app     reports/latest/index.html, app/dashboard.py
+```
+
+Key design rules:
+
+* **No look-ahead.** Features for day D use only matches before D (tested in
+  `tests/test_engine.py`). Probability models are re-fitted each season on
+  earlier seasons.
+* **Pick on development, judge on holdout.** Hyper-parameters were tuned on
+  2003-2013; strategy rules are scored on 2005-2016 and reported on 2016-2026.
+* **Report the uncomfortable numbers.** ROI by claimed edge, capped-edge
+  variants and a dev-vs-holdout scatter of every strategy variant are in the
+  report.
+
+## Team news
+
+Edit `config/adjustments.yaml`:
+
+```yaml
+- team: Leeds
+  country: ENG
+  attack: -0.08      # first-choice striker out
+  defence: 0.0
+  until: 2026-11-09
+  note: "Striker out, per Thursday presser"
+```
+
+Sources for news (X accounts, injury sites, lineup timings) are listed in
+`docs/RESEARCH.md` section 5.
+
+## Repository layout
+
+```
+src/footy/
+  data/        sources.py (downloaders), schema.py (normalisation), store.py
+  ratings/     models.py (Elo, pi, online Poisson), engine.py, poisson_math.py
+  models/      market.py (de-vig), probability.py (walk-forward models)
+  backtest.py  strategies, staking, metrics
+  report.py    report tables;  report_html.py  static dashboard
+  pipeline.py  build / predict / team-news adjustments
+  cli.py       `footy` command
+app/dashboard.py   Streamlit app
+config/            adjustments.yaml
+docs/RESEARCH.md   research notes
+reports/latest/    generated report (CSV tables + index.html)
+tests/             pytest suite
+```
+
+## Limitations
+
+* The included report was built from the GitHub mirror (the build environment
+  could not reach football-data.co.uk): no Pinnacle or closing odds, so no CLV,
+  and no upcoming fixtures. Run `footy all` locally to get both.
+* "Best price" assumes you can always get the top quote. You often cannot,
+  and bookmakers limit winning accounts, especially in lower leagues.
+* Only league matches are in the data; cup and European games are missing from
+  rest-day and form calculations.
+
+Gambling involves financial risk. Nothing here guarantees future returns.

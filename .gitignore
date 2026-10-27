@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+# local data (re-create with `footy fetch` + `footy build`)
+data/*
+!data/.gitkeep
+.streamlit/secrets.toml

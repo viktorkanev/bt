@@ -1,0 +1,23 @@
+# Manual team-news adjustments, applied to upcoming-fixture predictions
+# (`footy predict`, the dashboard's "Upcoming & value" page and `footy matchup`).
+#
+# attack : relative change in the team's own expected goals   (-0.10 = scores 10% less)
+# defence: relative change in goals the team concedes          (+0.10 = concedes 10% more)
+# until  : last date the adjustment applies (inclusive); omit for "until removed"
+# country: optional, disambiguates teams with the same name in different countries
+#
+# Rough sizing guide (see docs/RESEARCH.md):
+#   first-choice striker out ............ attack  -0.05 to -0.12
+#   first-choice goalkeeper out ......... defence +0.04 to +0.08
+#   two or more first-choice CBs out .... defence +0.06 to +0.12
+#   heavy rotation (cup / Europe) ....... attack -0.08, defence +0.08
+#   new-manager bounce .................. usually priced in already; avoid
+#
+# Example (commented out):
+# - team: Arsenal
+#   country: ENG
+#   attack: -0.08
+#   defence: 0.0
+#   until: 2026-11-09
+#   note: "Saka out (hamstring), per club presser"
+[]

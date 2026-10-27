@@ -1,0 +1,156 @@
+{
+  "generated": "2026-10-27 22:40",
+  "data_source": "mirror",
+  "matches": 238854,
+  "first_date": "2000-07-28",
+  "last_result": "2026-09-03",
+  "leagues": 38,
+  "eval_matches": 203013,
+  "dev_window": [
+    "2005-07-01",
+    "2016-07-01"
+  ],
+  "holdout_window": [
+    "2016-07-01",
+    "2100-01-01"
+  ],
+  "named_strategies": {
+    "consensus_max": {
+      "name": "Consensus vs best price",
+      "market": "1x2",
+      "model": "mkt",
+      "price": "max",
+      "min_edge": 0.02,
+      "max_edge": 1.0,
+      "min_odds": 1.3,
+      "max_odds": 8.0,
+      "outcomes": [
+        "h",
+        "d",
+        "a"
+      ],
+      "staking": "flat",
+      "kelly_fraction": 0.25,
+      "kelly_cap": 0.05,
+      "leagues": null,
+      "commission": 0.0,
+      "ah_rho": -0.06
+    },
+    "blend_max": {
+      "name": "Model+market @ best price",
+      "market": "1x2",
+      "model": "blend",
+      "price": "max",
+      "min_edge": 0.03,
+      "max_edge": 1.0,
+      "min_odds": 1.3,
+      "max_odds": 8.0,
+      "outcomes": [
+        "h",
+        "d",
+        "a"
+      ],
+      "staking": "flat",
+      "kelly_fraction": 0.25,
+      "kelly_cap": 0.05,
+      "leagues": null,
+      "commission": 0.0,
+      "ah_rho": -0.06
+    },
+    "blend_b365": {
+      "name": "Model+market @ Bet365",
+      "market": "1x2",
+      "model": "blend",
+      "price": "b365",
+      "min_edge": 0.03,
+      "max_edge": 1.0,
+      "min_odds": 1.3,
+      "max_odds": 8.0,
+      "outcomes": [
+        "h",
+        "d",
+        "a"
+      ],
+      "staking": "flat",
+      "kelly_fraction": 0.25,
+      "kelly_cap": 0.05,
+      "leagues": null,
+      "commission": 0.0,
+      "ah_rho": -0.06
+    },
+    "ens_max": {
+      "name": "Ratings-only model @ best price",
+      "market": "1x2",
+      "model": "ens",
+      "price": "max",
+      "min_edge": 0.05,
+      "max_edge": 1.0,
+      "min_odds": 1.3,
+      "max_odds": 8.0,
+      "outcomes": [
+        "h",
+        "d",
+        "a"
+      ],
+      "staking": "flat",
+      "kelly_fraction": 0.25,
+      "kelly_cap": 0.05,
+      "leagues": null,
+      "commission": 0.0,
+      "ah_rho": -0.06
+    },
+    "ou_blend_max": {
+      "name": "Over/Under 2.5 model+market @ best price",
+      "market": "ou25",
+      "model": "oublend",
+      "price": "max",
+      "min_edge": 0.03,
+      "max_edge": 1.0,
+      "min_odds": 1.3,
+      "max_odds": 4.0,
+      "outcomes": [
+        "h",
+        "d",
+        "a"
+      ],
+      "staking": "flat",
+      "kelly_fraction": 0.25,
+      "kelly_cap": 0.05,
+      "leagues": null,
+      "commission": 0.0,
+      "ah_rho": -0.06
+    },
+    "ah_pxg_b365": {
+      "name": "Asian handicap pseudo-xG @ Bet365",
+      "market": "ah",
+      "model": "pxg",
+      "price": "b365",
+      "min_edge": 0.05,
+      "max_edge": 1.0,
+      "min_odds": 1.5,
+      "max_odds": 3.0,
+      "outcomes": [
+        "h",
+        "d",
+        "a"
+      ],
+      "staking": "flat",
+      "kelly_fraction": 0.25,
+      "kelly_cap": 0.05,
+      "leagues": null,
+      "commission": 0.0,
+      "ah_rho": -0.06
+    }
+  },
+  "model_labels": {
+    "mkt": "Bet365 (margin removed)",
+    "elo": "Elo",
+    "pi": "Pi-ratings",
+    "pois": "Dixon-Coles (goals)",
+    "pxg": "Dixon-Coles (pseudo-xG)",
+    "ens": "Ensemble (ratings only)",
+    "gbm": "Gradient boosting (ratings only)",
+    "blend": "Ensemble + market"
+  },
+  "upcoming": 0
+}
