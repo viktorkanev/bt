@@ -39,8 +39,26 @@ def _get(url: str) -> bytes:
 
 
 def _read_csv_bytes(content: bytes) -> pd.DataFrame:
-    return pd.read_csv(io.BytesIO(content), encoding="latin-1", on_bad_lines="skip",
-                       low_memory=False)
+    """Parse a football-data.co.uk CSV.
+
+    Files are mostly UTF-8 with a byte-order mark (BOM), older ones latin-1.
+    Decoding a BOM as latin-1 mangles the first column name ("Div"), which made
+    fixture files unreadable, so try UTF-8 first and clean the header either way.
+    """
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+    df = pd.read_csv(io.StringIO(text), on_bad_lines="skip", low_memory=False)
+    df.columns = [str(c).replace("\ufeff", "").replace("\u00ef\u00bb\u00bf", "").strip()
+                  for c in df.columns]
+    return df
+
+
+def _looks_like_csv(content: bytes) -> bool:
+    """False for HTML error pages served for seasons a league is not covered."""
+    head = content[:400].replace(b"\xef\xbb\xbf", b"").lstrip().lower()
+    return bool(head) and not head.startswith(b"<") and b"date" in head
 
 
 def fd_season_code(start_year: int) -> str:
@@ -88,12 +106,20 @@ def fetch_football_data(
             if not path.exists() or y > cur - refresh_recent:
                 url = f"{FD_BASE}/mmz4281/{fd_season_code(y)}/{code}.csv"
                 try:
-                    path.write_bytes(_get(url))
+                    content = _get(url)
                 except Exception as e:  # noqa: BLE001
                     log.info("skip %s: %s", url, e)
                     continue
+                if not _looks_like_csv(content):
+                    log.info("skip %s: not a results file (league not covered that season)", url)
+                    continue
+                path.write_bytes(content)
+            content = path.read_bytes()
+            if not _looks_like_csv(content):
+                path.unlink(missing_ok=True)  # error page cached by an older version
+                continue
             try:
-                frames.append(normalise_football_data(_read_csv_bytes(path.read_bytes()), code))
+                frames.append(normalise_football_data(_read_csv_bytes(content), code))
             except Exception as e:  # noqa: BLE001
                 log.warning("could not parse %s: %s", path, e)
     if not frames:
@@ -111,11 +137,30 @@ def fetch_mirror(raw_dir: Path, refresh: bool = True) -> pd.DataFrame:
     return normalise_mirror(raw)
 
 
+def parse_fixtures(name: str, content: bytes) -> list[pd.DataFrame]:
+    """Normalise fixtures.csv (main leagues) or new_league_fixtures.csv (extra leagues)."""
+    raw = _read_csv_bytes(content)
+    frames: list[pd.DataFrame] = []
+    if "Div" in raw.columns:
+        for div, grp in raw.dropna(subset=["Div"]).groupby("Div"):
+            frames.append(normalise_football_data(grp, str(div).strip()))
+    elif "Country" in raw.columns and "League" in raw.columns:
+        lookup = {lg.name.lower(): lg.code for lg in leagues.LEAGUES.values() if lg.extra}
+        for (country, lname), grp in raw.groupby(["Country", "League"]):
+            code = _extra_code(str(country), str(lname), lookup)
+            if code:
+                frames.append(normalise_football_data(grp, code))
+    if not frames:
+        log.warning("%s: no fixtures recognised (%d rows, columns %s)", name, len(raw),
+                    list(raw.columns)[:8])
+    return frames
+
+
 def fetch_fixtures(raw_dir: Path) -> pd.DataFrame:
     """Upcoming fixtures with current odds from football-data.co.uk."""
     raw_dir = Path(raw_dir) / "football-data"
     raw_dir.mkdir(parents=True, exist_ok=True)
-    frames = []
+    frames: list[pd.DataFrame] = []
     for name in ("fixtures.csv", "new_league_fixtures.csv"):
         try:
             content = _get(f"{FD_BASE}/{name}")
@@ -123,17 +168,7 @@ def fetch_fixtures(raw_dir: Path) -> pd.DataFrame:
             log.warning("fixtures download failed (%s): %s", name, e)
             continue
         (raw_dir / name).write_bytes(content)
-        raw = _read_csv_bytes(content)
-        raw.columns = [str(c).strip().lstrip("﻿") for c in raw.columns]
-        if "Div" in raw.columns:
-            for div, grp in raw.groupby("Div"):
-                frames.append(normalise_football_data(grp, str(div)))
-        elif "Country" in raw.columns:
-            lookup = {lg.name.lower(): lg.code for lg in leagues.LEAGUES.values() if lg.extra}
-            for (country, lname), grp in raw.groupby(["Country", "League"]):
-                code = _extra_code(str(country), str(lname), lookup)
-                if code:
-                    frames.append(normalise_football_data(grp, code))
+        frames += parse_fixtures(name, content)
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)

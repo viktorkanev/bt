@@ -35,8 +35,8 @@ def _clean(x):
 def render(out_dir: Path, standalone: bool = True) -> str:
     out_dir = Path(out_dir)
     data = {
-        "summary": json.loads((out_dir / "summary.json").read_text()),
-        "curves": json.loads((out_dir / "curves.json").read_text()),
+        "summary": json.loads((out_dir / "summary.json").read_text(encoding="utf-8")),
+        "curves": json.loads((out_dir / "curves.json").read_text(encoding="utf-8")),
         "overall": _records(out_dir / "accuracy_overall.csv"),
         "byLeague": _records(out_dir / "league_edge.csv"),
         "byYear": _records(out_dir / "accuracy_by_year.csv"),
@@ -55,10 +55,10 @@ def render(out_dir: Path, standalone: bool = True) -> str:
     for w in ("dev", "holdout"):
         f = rdir / w / "results.json"
         if f.exists():
-            research[w] = json.loads(f.read_text())
+            research[w] = json.loads(f.read_text(encoding="utf-8"))
     ff = rdir / "forward" / "summary.json"
     if ff.exists():
-        research["forward"] = json.loads(ff.read_text())
+        research["forward"] = json.loads(ff.read_text(encoding="utf-8"))
     data["research"] = research
     payload = json.dumps(_clean(data), default=str).replace("</", "<\\/")
     body = TEMPLATE.replace("__DATA__", payload)

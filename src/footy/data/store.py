@@ -24,7 +24,7 @@ def save_store(matches: pd.DataFrame, source: str) -> None:
         "rows": int(len(matches)),
         "first_date": str(matches["date"].min().date()),
         "last_date": str(matches["date"].max().date()),
-    }, indent=2))
+    }, indent=2), encoding="utf-8")
 
 
 def load_store() -> pd.DataFrame:
@@ -34,4 +34,4 @@ def load_store() -> pd.DataFrame:
 
 
 def load_meta() -> dict:
-    return json.loads(META.read_text()) if META.exists() else {}
+    return json.loads(META.read_text(encoding="utf-8")) if META.exists() else {}

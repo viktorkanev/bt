@@ -50,7 +50,7 @@ def freeze(d: pd.DataFrame | None = None, path: Path = FROZEN) -> dict:
         "F2": {"coef": {c: float(r.params[c]) for c in F2_COLS}, "min_signal": 0.05, "rho": -0.07,
                "prices": ["ps", "b365", "max", "avg"]},
     }
-    Path(path).write_text(json.dumps(spec, indent=2))
+    Path(path).write_text(json.dumps(spec, indent=2), encoding="utf-8")
     return spec
 
 
@@ -149,7 +149,7 @@ def _f2(d: pd.DataFrame, spec: dict) -> pd.DataFrame:
 
 def evaluate(d: pd.DataFrame | None = None, out_dir: Path = OUT_DIR,
              since: pd.Timestamp = FREEZE_DATE) -> dict:
-    spec = json.loads(FROZEN.read_text())
+    spec = json.loads(FROZEN.read_text(encoding="utf-8"))
     from ..pipeline import load_predictions
     from ..models.probability import eligible
     from . import signals
@@ -178,5 +178,5 @@ def evaluate(d: pd.DataFrame | None = None, out_dir: Path = OUT_DIR,
         for price, g in settled.groupby("price_book"):
             res[name][price] = _summ(g["ret"].to_numpy(), g["odds"].to_numpy(),
                                      g["clv"].to_numpy() if "clv" in g else None)
-    (out_dir / "summary.json").write_text(json.dumps(res, indent=2, default=float))
+    (out_dir / "summary.json").write_text(json.dumps(res, indent=2, default=float), encoding="utf-8")
     return res

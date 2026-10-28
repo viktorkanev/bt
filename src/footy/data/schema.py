@@ -99,9 +99,14 @@ def _coalesce(df: pd.DataFrame, candidates: list[str]) -> pd.Series:
 def normalise_football_data(raw: pd.DataFrame, league: str) -> pd.DataFrame:
     """Normalise one football-data.co.uk CSV (main or extra-league format)."""
     raw = raw.copy()
-    raw.columns = [str(c).strip().lstrip("﻿") for c in raw.columns]
-    home_col = "HomeTeam" if "HomeTeam" in raw.columns else "Home"
-    away_col = "AwayTeam" if "AwayTeam" in raw.columns else "Away"
+    raw.columns = [str(c).replace("\ufeff", "").replace("\u00ef\u00bb\u00bf", "").strip()
+                   for c in raw.columns]
+    # Column names changed over the years: HomeTeam/AwayTeam, Home/Away, and HT/AT
+    # in some files from the early 2000s.
+    home_col = next((c for c in ("HomeTeam", "Home", "HT") if c in raw.columns), None)
+    away_col = next((c for c in ("AwayTeam", "Away", "AT") if c in raw.columns), None)
+    if home_col is None or away_col is None or "Date" not in raw.columns:
+        raise ValueError(f"not a match file (columns: {list(raw.columns)[:8]})")
     raw = raw.dropna(subset=[home_col, away_col, "Date"])
     out = pd.DataFrame(index=raw.index)
     out["league"] = league

@@ -254,5 +254,5 @@ def run(window: str = "holdout", out_dir: Path = OUT_DIR, d: pd.DataFrame | None
                                         .reset_index().to_dict("records"))
             res[f"{name}_by_tier"] = (b.assign(tg=b["tier"].clip(upper=3)).groupby("tg")["ret"]
                                       .agg(["size", "mean"]).round(4).reset_index().to_dict("records"))
-    (out_dir / "results.json").write_text(json.dumps(res, indent=2, default=float))
+    (out_dir / "results.json").write_text(json.dumps(res, indent=2, default=float), encoding="utf-8")
     return res

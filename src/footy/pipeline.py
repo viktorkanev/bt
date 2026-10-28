@@ -73,7 +73,7 @@ def load_models() -> dict:
 def load_adjustments(path: Path = ADJUSTMENTS) -> list[dict]:
     if not Path(path).exists():
         return []
-    items = yaml.safe_load(Path(path).read_text()) or []
+    items = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or []
     return [a for a in items if isinstance(a, dict) and a.get("team")]
 
 

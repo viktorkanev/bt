@@ -282,8 +282,8 @@ def make_report(out_dir: Path = OUT_DIR) -> Path:
         "model_labels": MODEL_LABELS,
         "upcoming": int(len(fx)),
     }
-    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
-    (out_dir / "curves.json").write_text(json.dumps(curves))
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    (out_dir / "curves.json").write_text(json.dumps(curves), encoding="utf-8")
     html = render(out_dir, standalone=True)
-    (out_dir / "index.html").write_text(html)
+    (out_dir / "index.html").write_text(html, encoding="utf-8")
     return out_dir / "index.html"

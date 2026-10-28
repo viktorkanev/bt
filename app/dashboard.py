@@ -342,6 +342,6 @@ elif page == "Team news":
         st.dataframe(pd.DataFrame(adj), hide_index=True, use_container_width=True)
     else:
         st.info("No adjustments set.")
-    st.code(pipeline.ADJUSTMENTS.read_text() if pipeline.ADJUSTMENTS.exists() else "", language="yaml")
+    st.code(pipeline.ADJUSTMENTS.read_text(encoding="utf-8") if pipeline.ADJUSTMENTS.exists() else "", language="yaml")
     st.markdown("See `docs/RESEARCH.md` for team-news sources (accounts and sites) and rules of thumb "
                 "for sizing an adjustment.")
