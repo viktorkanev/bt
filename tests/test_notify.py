@@ -44,10 +44,10 @@ class FakeServices:
             def do_POST(self):  # noqa: N802
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
                 if self.path.startswith("/bot"):
-                    outer.requests.append(("telegram", self.path, body))
+                    outer.requests.append(("telegram", self.path, body, dict(self.headers)))
                     status, reply = outer.telegram.pop(0) if outer.telegram else (200, TG_OK)
                 else:
-                    outer.requests.append(("ntfy", self.path, body))
+                    outer.requests.append(("ntfy", self.path, body, dict(self.headers)))
                     status, reply = 200, NTFY_OK
                 data = json.dumps(reply).encode()
                 self.send_response(status)
@@ -143,6 +143,43 @@ def test_nothing_delivered_is_reported(services):
     fake, clock = services(telegram=[(400, TG_400)]), Clock()
     n = Notifier(_notify_cfg(fake, ntfy=False), sleep=clock.sleep, clock=clock.now)
     assert n.send("title", "body") is False and n.sent == 0
+
+
+def test_polymarket_pick_links_to_the_market_and_opens_it_on_tap(services, tmp_path):
+    from footy.watch.server import Watcher
+    fake = services()
+    cfg = C.load(None)
+    cfg["server"].update({"db": str(tmp_path / "w.db"), "picks_file": str(tmp_path / "picks.json")})
+    cfg["paper"]["enabled"] = False
+    cfg["alerts"]["value_alerts"] = False
+    cfg["notify"] = _notify_cfg(fake, telegram=False)
+    w = Watcher(cfg, provider_list=[])
+    ko = NOW + timedelta(hours=3)
+    ev = w.index.add("x", "1", "Bolton", "Wigan", ko)
+    link = "https://polymarket.com/event/efl-bol-wig-2026-11-01-more-markets/efl-bol-wig-2026-11-01-total-2pt5"
+    w.picks = [{"rule": "F1", "rule_name": "Lower-league goals", "kickoff": ko.isoformat(), "home": "Bolton",
+                "away": "Wigan", "market": "ou", "side": "over", "line": 2.5, "prob": 0.6, "min_edge": 0.03}]
+    # over 2.5 at 50c plus the taker fee is 1 / 0.5125 = 1.95: 0.6 * 1.95 - 1 = +17%
+    w.quotes = {(ev.id, "ou", 2.5, "polymarket", "over"):
+                Quote(ev.id, "ou", 2.5, "over", "polymarket", 2.0, NOW, size=150.0, link=link)}
+    assert len(w.evaluate(NOW)) == 1
+    ntfy = [r for r in fake.requests if r[0] == "ntfy"]
+    assert len(ntfy) == 1 and link in ntfy[0][2] and ntfy[0][3].get("Click") == link
+    from footy.watch.server import render
+    assert f"href='{link}'" in render(w)                     # the status page links the live price too
+
+
+def test_arbitrage_alert_links_its_polymarket_leg():
+    from footy.watch.notify import format_alert
+    from footy.watch.rules import Alert
+    link = "https://polymarket.com/event/epl-ars-che-2026-11-07/epl-ars-che-2026-11-07-draw"
+    legs = [{"outcome": "home", "book": "pinnacle", "price": 2.20, "net": 2.20, "share": 0.45},
+            {"outcome": "draw", "book": "polymarket", "price": 1 / 0.24, "net": 4.0, "share": 0.25, "link": link},
+            {"outcome": "away", "book": "pinnacle", "price": 3.50, "net": 3.50, "share": 0.30}]
+    a = Alert("arb", "e", "Arsenal v Chelsea", NOW, "E0", "1x2", None, "all", "multi", 0.99, 0.0, 0.01, "",
+              {"legs": legs})
+    title, body = format_alert(a, "Arsenal", "Chelsea")
+    assert body.count("https://") == 1 and link in body
 
 
 def test_undelivered_alert_is_sent_again_on_the_next_sweep(services, tmp_path):

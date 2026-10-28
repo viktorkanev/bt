@@ -132,7 +132,7 @@ def value_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetim
                     out.append(Alert("value", eid, f"{ev.home} v {ev.away}", ev.kickoff, ev.league, market, line,
                                      o, book, q.price, 1 / p, edge,
                                      f"{ref_book} {ref_txt} (no-margin {1 / p:.2f})",
-                                     {"reference": ref_book}, ev.sport))
+                                     {"reference": ref_book, **({"link": q.link} if q.link else {})}, ev.sport))
     return out
 
 
@@ -175,7 +175,8 @@ def arb_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetime,
         if not a.get("min_arb", 0.005) <= edge <= a.get("max_arb", 0.10):
             continue
         legs = [{"outcome": o, "book": best[o][1].book, "price": best[o][1].price, "net": best[o][0],
-                 "share": (1 / best[o][0]) / inv} for o in outcomes]
+                 "share": (1 / best[o][0]) / inv, **({"link": best[o][1].link} if best[o][1].link else {})}
+                for o in outcomes]
         detail = " · ".join(f"{selection_text(market, line, lg['outcome'], ev.home, ev.away)} @ {lg['price']:.2f} "
                             f"{lg['book']} ({lg['share']:.0%})" for lg in legs)
         out.append(Alert("arb", eid, f"{ev.home} v {ev.away}", ev.kickoff, ev.league, market, line, "all",
@@ -227,7 +228,7 @@ def pick_alerts(picks: list[dict], index: EventIndex, quotes: list[Quote], cfg: 
                 need = book_gross_needed(ah_break_even(gd, q.line, q.outcome, need_edge), q.book, cfg)
             else:
                 continue
-            cand = {"book": q.book, "price": q.price, "line": q.line, "edge": edge, "need": need}
+            cand = {"book": q.book, "price": q.price, "line": q.line, "edge": edge, "need": need, "link": q.link}
             if best is None or edge > best["edge"]:
                 best = cand
             if open_for_bets and edge >= need_edge:
@@ -236,7 +237,8 @@ def pick_alerts(picks: list[dict], index: EventIndex, quotes: list[Quote], cfg: 
                                     pk.get("reason", ""), {"rule": pk.get("rule_name", pk.get("rule", "")),
                                                            "rule_code": pk.get("rule", ""),
                                                            "league": pk.get("league"),
-                                                           "pick_line": pk.get("line")}))
+                                                           "pick_line": pk.get("line"),
+                                                           **({"link": q.link} if q.link else {})}))
         row["best"] = best
         status.append(row)
     return alerts, status

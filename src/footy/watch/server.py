@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import providers as P
 from .core import EventIndex, Quote, parse_time, utcnow
-from .notify import Notifier, book_name, format_alert, local_time
+from .notify import Notifier, alert_link, book_name, format_alert, local_time
 from .paper import VENUES, FootballDataResults, PaperBook, summarize
 from .rules import Alert, arb_alerts, best_per_pick, pick_alerts, selection_text, value_alerts
 from .state import State
@@ -170,7 +170,8 @@ class Watcher:
             if self.state.should_send(al, now, a.get("cooldown_minutes", 240), a.get("reprice_step", 0.01)):
                 ev = self.index.events[al.event_id]
                 title, body = format_alert(al, ev.home, ev.away, tz)
-                if self.notifier.send(title, body, "high" if al.kind in ("pick", "arb") else "default"):
+                if self.notifier.send(title, body, "high" if al.kind in ("pick", "arb") else "default",
+                                      link=alert_link(al)):
                     self.state.record(al, now)  # undelivered alerts are tried again next time
                     sent.append(al)
         self.state.prune(now - timedelta(days=7))
@@ -267,6 +268,8 @@ def render(w: Watcher) -> str:
         else:
             line = "" if pk["market"] == "ou" else f" @ line {b['line'] if pk['side'] == 'home' else -b['line']:+.2f}"
             live = f"{b['price']:.2f} {e(book_name(b['book']))}{line}"
+            if b.get("link"):
+                live = f"<a href='{e(b['link'])}' target='_blank' rel='noopener'>{live}</a>"
             ok = b["edge"] >= float(pk.get("min_edge", 0))
             status = (f"<span class='pill ok'>Bet · {_pct(b['edge'])}</span>" if ok else
                       f"<span class='pill wait'>Wait for {b['need']:.2f}+</span>")

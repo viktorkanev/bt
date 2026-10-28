@@ -525,7 +525,7 @@ POLY_KINDS = {"mlb": "baseball", "kbo": "baseball", "npb": "baseball", "nba": "b
               "rugby": "rugbyunion", "urc": "rugbyunion", "top14": "rugbyunion", "volleyball": "volleyball"}
 # Gamma /markets fields the watcher reads; the rest (descriptions, images ...) is dropped on arrival.
 _PM_FIELDS = ("question", "groupItemTitle", "outcomes", "clobTokenIds", "sportsMarketType", "line",
-              "gameStartTime", "active", "closed", "acceptingOrders", "bestAsk", "bestBid")
+              "gameStartTime", "active", "closed", "acceptingOrders", "bestAsk", "bestBid", "slug")
 
 
 class PolymarketProvider:
@@ -632,7 +632,7 @@ class PolymarketProvider:
                         if parent.get("id"):
                             ev = events.setdefault(str(parent["id"]), {
                                 "id": str(parent["id"]), "title": str(parent.get("title", "")), "_sport": kind,
-                                "markets": []})
+                                "slug": str(parent.get("slug") or ""), "markets": []})
                             ev["markets"].append({k: m.get(k) for k in _PM_FIELDS})
                     if len(rows) < self.PAGE:
                         break
@@ -770,15 +770,23 @@ class PolymarketProvider:
             for m in e.get("markets", []):
                 if m.get("closed") or m.get("active") is False or m.get("acceptingOrders") is False:
                     continue
+                page = cls.page(e, m)
                 for market, line, outcome, token in cls.legs(m, home, away, markets):
                     line, outcome = orient(market, line, outcome, swapped)
-                    q = cls._quote(ev.id, market, line, outcome, token, books.get(token), m, book, now)
+                    q = cls._quote(ev.id, market, line, outcome, token, books.get(token), m, book, now, page)
                     if q:
                         out.append(q)
         return out
 
     @staticmethod
-    def _quote(eid, market, line, outcome, token, b, m, book, now) -> Quote | None:
+    def page(e: dict, m: dict) -> str | None:
+        """The market's web page, polymarket.com/event/<match>/<market> (or the match's page)."""
+        if not e.get("slug"):
+            return None
+        return f"https://polymarket.com/event/{e['slug']}" + (f"/{m['slug']}" if m.get("slug") else "")
+
+    @staticmethod
+    def _quote(eid, market, line, outcome, token, b, m, book, now, page=None) -> Quote | None:
         ask = bid = size = None
         upd = now
         if b:
@@ -795,7 +803,7 @@ class PolymarketProvider:
         if not ask or not 0 < float(ask) < 1:
             return None
         lay = 1 / float(bid) if bid and 0 < float(bid) < 1 else None
-        return Quote(eid, market, line, outcome, book, 1 / float(ask), upd, lay, size)
+        return Quote(eid, market, line, outcome, book, 1 / float(ask), upd, lay, size, page)
 
 
 PROVIDERS = {"oddsapi": OddsAPIProvider, "betfair": BetfairProvider, "polymarket": PolymarketProvider,

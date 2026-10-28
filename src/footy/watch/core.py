@@ -74,6 +74,7 @@ class Quote:
     updated: datetime | None = None
     lay: float | None = None
     size: float | None = None
+    link: str | None = None  # the market's web page (Polymarket)
 
     @property
     def key(self) -> tuple:

@@ -152,13 +152,41 @@ OTHER = [{"id": "9101", "title": "AS Trenčín vs. ŠK Slovan Bratislava", "mark
        groupItemTitle="ŠK Slovan Bratislava")]}]
 
 
+SLUGS = {"9001": "epl-ars-che-2026-11-07", "9002": "epl-ars-che-2026-11-07-more-markets",
+         "9101": "svk1-tre-sba-2026-11-07"}
+
+
 def _rows(events):
     """Gamma /markets rows: flat markets, each naming its parent event, as the real API returns them."""
-    return [{**m, "endDate": "2026-11-07T15:00:00Z", "feesEnabled": True,
+    return [{**m, "slug": f"{SLUGS[e['id']]}-m{i}", "endDate": "2026-11-07T15:00:00Z", "feesEnabled": True,
              "feeSchedule": {"exponent": 1, "rate": 0.05, "takerOnly": True, "rebateRate": 0.15},
-             "events": [{"id": e["id"], "title": e["title"], "seriesSlug": "soccer-epl",
+             "events": [{"id": e["id"], "title": e["title"], "slug": SLUGS[e["id"]], "seriesSlug": "soccer-epl",
                          "startTime": "2026-11-07T15:00:00Z", "endDate": "2026-11-07T15:00:00Z"}]}
-            for e in events for m in e["markets"]]
+            for e in events for i, m in enumerate(e["markets"])]
+
+
+def _fake_gamma(rows):
+    def fake(url, data=None, headers=None, timeout=30.0):
+        parts = urllib.parse.urlsplit(url)
+        if parts.path == "/markets":
+            q = urllib.parse.parse_qs(parts.query)
+            want = [r for r in rows if r["sportsMarketType"] == q["sports_market_types"][0]]
+            return want[int(q["offset"][0]):int(q["offset"][0]) + int(q["limit"][0])], {}
+        if parts.path == "/books":
+            return [BOOKS[t] for t in (x["token_id"] for x in json.loads(data)) if t in BOOKS], {}
+        raise AssertionError(f"unexpected request {url}")
+    return fake
+
+
+def test_prices_link_to_their_polymarket_page(monkeypatch):
+    monkeypatch.setattr(P, "http_json", _fake_gamma(_rows(EVENTS)))
+    idx = EventIndex()
+    idx.add("oddsapi", "x", "Arsenal", "Chelsea", KO)
+    got = {(q.market, q.line, q.outcome): q.link for q in PolymarketProvider({}).poll(idx, NOW)}
+    # the draw is the main event's 2nd market; O/U 2.5 the first of "More Markets"
+    assert got[("1x2", None, "draw")] == "https://polymarket.com/event/epl-ars-che-2026-11-07/epl-ars-che-2026-11-07-m1"
+    assert got[("ou", 2.5, "over")] == got[("ou", 2.5, "under")] == \
+        "https://polymarket.com/event/epl-ars-che-2026-11-07-more-markets/epl-ars-che-2026-11-07-more-markets-m0"
 
 
 def test_poll_asks_only_for_needed_markets_and_prices_only_matches_other_feeds_have(monkeypatch):

@@ -51,7 +51,8 @@ def format_alert(a: Alert, home: str, away: str, tzname: str = "UTC") -> tuple[s
         title = f"Arbitrage {a.edge:+.1%}: {a.match}"
         legs = "\n".join(f"{selection_text(a.market, a.line, lg['outcome'], home, away)} @ "
                          f"{price_text(lg['price'], lg['book'])} "
-                         f"{book_name(lg['book'])} · {lg['share']:.0%} of stake" for lg in a.extra.get("legs", []))
+                         f"{book_name(lg['book'])} · {lg['share']:.0%} of stake"
+                         + (f"\n{lg['link']}" if lg.get("link") else "") for lg in a.extra.get("legs", []))
         body = (f"{sel} · {when}\n{legs}\n"
                 f"Locked-in return {a.edge:+.1%} if every leg is matched at these prices. Place the "
                 f"least liquid leg first.")
@@ -69,7 +70,14 @@ def format_alert(a: Alert, home: str, away: str, tzname: str = "UTC") -> tuple[s
         title = f"Pick ({rule}): {sel} @ {price_text(a.price, a.book)} {book_name(a.book)}"
         body = (f"{a.match} · {when}\n"
                 f"Edge {a.edge:+.1%}{moved} · bet at {a.fair_odds:.2f} or higher\n{a.detail}")
+    if a.extra.get("link"):  # e.g. the Polymarket market, one tap away
+        body += f"\n{a.extra['link']}"
     return title, body
+
+
+def alert_link(a: Alert) -> str | None:
+    """The page to open for an alert: its market's, or an arbitrage's first linked leg."""
+    return a.extra.get("link") or next((lg["link"] for lg in a.extra.get("legs", []) if lg.get("link")), None)
 
 
 TELEGRAM_GAP_S = 3.2       # Telegram takes about 20 messages a minute in one group
@@ -86,8 +94,11 @@ class Notifier:
         self._sleep, self._clock = sleep, clock
         self._telegram_at: float | None = None
 
-    def send(self, title: str, body: str, priority: str = "default") -> bool:
-        """True if at least one channel delivered the alert (or only the console is configured)."""
+    def send(self, title: str, body: str, priority: str = "default", link: str | None = None) -> bool:
+        """True if at least one channel delivered the alert (or only the console is configured).
+
+        ``link`` opens when the ntfy notification is tapped (Telegram makes the URL in the text clickable).
+        """
         n = self.cfg
         if n.get("console", True):
             log.info("ALERT %s | %s", title, body.replace("\n", " | "))
@@ -95,7 +106,7 @@ class Notifier:
         if n.get("telegram_token") and n.get("telegram_chat_id"):
             channels.append(("telegram", lambda: self._telegram(f"{title}\n{body}")))
         if n.get("ntfy_topic"):
-            channels.append(("ntfy", lambda: self._ntfy(title, body, priority)))
+            channels.append(("ntfy", lambda: self._ntfy(title, body, priority, link)))
         errors = []
         for name, deliver in channels:
             try:
@@ -135,12 +146,14 @@ class Notifier:
         finally:
             self._telegram_at = self._clock()
 
-    def _ntfy(self, title: str, body: str, priority: str) -> None:
+    def _ntfy(self, title: str, body: str, priority: str, link: str | None = None) -> None:
         n = self.cfg
+        headers = {"Title": title.encode("ascii", "replace").decode(), "Priority": priority, "Tags": "soccer"}
+        if link:
+            headers["Click"] = link  # tapping the notification opens the market
         urllib.request.urlopen(urllib.request.Request(
             f"{n.get('ntfy_server', 'https://ntfy.sh').rstrip('/')}/{n['ntfy_topic']}", data=body.encode("utf-8"),
-            headers={"Title": title.encode("ascii", "replace").decode(), "Priority": priority, "Tags": "soccer"}),
-            timeout=15).read()
+            headers=headers), timeout=15).read()
 
 
 def _json_reply(e: urllib.error.HTTPError) -> dict:
