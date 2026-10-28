@@ -1,0 +1,218 @@
+"""Odds-watcher core: data model, margin removal, settlement and team matching.
+
+Standard library only, so it runs on a Raspberry Pi Zero 2 W without pandas.
+"""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
+
+OUTCOMES = {"1x2": ("home", "draw", "away"), "ou": ("over", "under"), "ah": ("home", "away")}
+
+
+@dataclass
+class Event:
+    id: str                 # canonical id (shared across providers)
+    home: str
+    away: str
+    kickoff: datetime       # timezone-aware UTC
+    league: str | None = None
+    sources: dict = field(default_factory=dict)  # provider -> provider event id
+
+
+@dataclass
+class Quote:
+    event: str              # canonical event id
+    market: str             # "1x2" | "ou" | "ah"
+    line: float | None      # ou: goals line; ah: HOME handicap
+    outcome: str            # home | draw | away | over | under
+    book: str
+    price: float            # decimal back price
+    updated: datetime | None = None
+    lay: float | None = None
+    size: float | None = None
+
+    @property
+    def key(self) -> tuple:
+        return (self.event, self.market, self.line, self.book)
+
+
+# --------------------------------------------------------------- margins
+def devig(prices: list[float], method: str = "power") -> list[float]:
+    """Remove the bookmaker margin. ``power`` handles the favourite-longshot bias."""
+    q = [1.0 / p for p in prices]
+    if method == "proportional" or len(q) < 2:
+        s = sum(q)
+        return [x / s for x in q]
+    lo, hi = 0.5, 3.0
+    for _ in range(60):
+        k = (lo + hi) / 2
+        s = sum(x ** k for x in q)
+        if s < 1:
+            hi = k
+        else:
+            lo = k
+    k = (lo + hi) / 2
+    p = [x ** k for x in q]
+    s = sum(p)
+    return [x / s for x in p]
+
+
+def net_odds(price: float, commission: float = 0.0) -> float:
+    """Decimal odds after commission on net winnings (exchanges)."""
+    return 1 + (price - 1) * (1 - commission)
+
+
+def gross_needed(net: float, commission: float = 0.0) -> float:
+    """Quoted price needed to get ``net`` odds after commission."""
+    return 1 + (net - 1) / (1 - commission)
+
+
+# ------------------------------------------------------------ settlement
+def _sign(x: float) -> float:
+    return 1.0 if x > 1e-9 else -1.0 if x < -1e-9 else 0.0
+
+
+def ah_result(goal_diff: int, home_line: float, side: str) -> float:
+    """Fraction of stake won (+) or lost (-) for an Asian handicap bet.
+
+    ``home_line`` is the home team's handicap (-0.5 = home gives half a goal);
+    quarter lines are split into two half-stakes.
+    """
+    if round(home_line * 4) % 2 != 0:
+        r = 0.5 * _sign(goal_diff + home_line - 0.25) + 0.5 * _sign(goal_diff + home_line + 0.25)
+    else:
+        r = _sign(goal_diff + home_line)
+    return r if side == "home" else -r
+
+
+def ah_ev(gd_dist: dict[int, float], home_line: float, side: str, odds: float) -> float:
+    """Expected profit per unit stake given a goal-difference distribution."""
+    ev = 0.0
+    for gd, p in gd_dist.items():
+        r = ah_result(int(gd), home_line, side)
+        ev += p * (r * (odds - 1) if r > 0 else r)
+    return ev
+
+
+def ah_break_even(gd_dist: dict[int, float], home_line: float, side: str) -> float:
+    win = lose = 0.0
+    for gd, p in gd_dist.items():
+        r = ah_result(int(gd), home_line, side)
+        if r > 0:
+            win += p * r
+        elif r < 0:
+            lose += p * -r
+    return float("inf") if win <= 0 else 1 + lose / win
+
+
+# --------------------------------------------------------------- names
+_STOP = {"fc", "afc", "cf", "sc", "ssc", "cd", "ud", "sd", "rcd", "club", "calcio", "fk", "sk",
+         "bk", "if", "ff", "the", "de", "1", "ac", "as", "us", "sv", "vfl", "vfb", "tsg", "fsv"}
+_ALIASES = {
+    "man united": "manchester united", "man utd": "manchester united", "manchester utd": "manchester united",
+    "man city": "manchester city", "nott m forest": "nottingham forest", "nottm forest": "nottingham forest",
+    "sheffield weds": "sheffield wednesday", "sheffield utd": "sheffield united", "qpr": "queens park rangers",
+    "wolves": "wolverhampton wanderers", "wolverhampton": "wolverhampton wanderers",
+    "spurs": "tottenham hotspur", "tottenham": "tottenham hotspur", "brighton": "brighton and hove albion",
+    "west brom": "west bromwich albion", "newcastle": "newcastle united", "leeds": "leeds united",
+    "ath bilbao": "athletic bilbao", "athletic club": "athletic bilbao", "ath madrid": "atletico madrid",
+    "sociedad": "real sociedad", "betis": "real betis", "celta": "celta vigo", "espanol": "espanyol",
+    "m gladbach": "borussia monchengladbach", "monchengladbach": "borussia monchengladbach",
+    "ein frankfurt": "eintracht frankfurt", "fc koln": "koln", "fc cologne": "koln", "cologne": "koln",
+    "paris sg": "paris saint germain", "psg": "paris saint germain", "st etienne": "saint etienne",
+    "inter": "inter milan", "internazionale": "inter milan", "milan": "ac milan",
+    "dortmund": "borussia dortmund", "leverkusen": "bayer leverkusen", "bayern munich": "bayern munchen",
+    "bayern": "bayern munchen", "rb leipzig": "leipzig", "rasenballsport leipzig": "leipzig",
+    "sp lisbon": "sporting lisbon", "sporting cp": "sporting lisbon", "porto": "fc porto",
+}
+
+
+def normalize(name: str) -> str:
+    s = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode().lower()
+    s = s.replace("&", " and ").replace("'", " ")
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    s = _ALIASES.get(s, s)
+    toks = [t for t in s.split() if t not in _STOP]
+    s = " ".join(toks) if toks else s
+    s = s.replace(" utd", " united")
+    return _ALIASES.get(s, s)
+
+
+def name_score(a: str, b: str) -> float:
+    a, b = normalize(a), normalize(b)
+    if a == b:
+        return 1.0
+    ta, tb = set(a.split()), set(b.split())
+    short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    contain = 0.9 if short and short <= long_ else 0.0
+    return max(SequenceMatcher(None, a, b).ratio(), contain)
+
+
+def match_event(home: str, away: str, kickoff: datetime, events, tol_hours: float = 3.0,
+                min_score: float = 0.72):
+    """Best event with the same teams kicking off within ``tol_hours``."""
+    best, best_s = None, 0.0
+    for ev in events:
+        if abs((ev.kickoff - kickoff).total_seconds()) > tol_hours * 3600:
+            continue
+        sh, sa = name_score(home, ev.home), name_score(away, ev.away)
+        if min(sh, sa) < min_score:
+            continue
+        if sh + sa > best_s:
+            best, best_s = ev, sh + sa
+    return best
+
+
+class EventIndex:
+    """Merges the same match seen by different providers into one canonical event."""
+
+    def __init__(self):
+        self.events: dict[str, Event] = {}
+        self._by_source: dict[tuple[str, str], str] = {}
+
+    def add(self, provider: str, provider_id: str, home: str, away: str, kickoff: datetime,
+            league: str | None = None) -> Event:
+        cid = self._by_source.get((provider, provider_id))
+        if cid:
+            ev = self.events[cid]
+            ev.kickoff = kickoff
+            return ev
+        ev = match_event(home, away, kickoff, self.events.values(), tol_hours=2.0, min_score=0.8)
+        if ev is None:
+            cid = f"{kickoff:%Y%m%d}-{normalize(home)}-{normalize(away)}".replace(" ", "_")
+            ev = Event(cid, home, away, kickoff, league)
+            self.events[cid] = ev
+        ev.sources[provider] = provider_id
+        if league and not ev.league:
+            ev.league = league
+        self._by_source[(provider, provider_id)] = ev.id
+        return ev
+
+    def prune(self, before: datetime) -> None:
+        for cid in [k for k, e in self.events.items() if e.kickoff < before]:
+            ev = self.events.pop(cid)
+            for prov, pid in ev.sources.items():
+                self._by_source.pop((prov, pid), None)
+
+
+def parse_time(s: str) -> datetime:
+    """ISO-8601 (with Z or offset) to an aware UTC datetime."""
+    s = s.strip().replace("Z", "+00:00")
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def within(kickoff: datetime, now: datetime, min_minutes: float, hours: float) -> bool:
+    return now + timedelta(minutes=min_minutes) <= kickoff <= now + timedelta(hours=hours)

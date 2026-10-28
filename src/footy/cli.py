@@ -11,6 +11,7 @@
     footy confirm    re-run the pre-registered market-surprise test (docs/PREREGISTRATION.md)
     footy forward    score the frozen rules on matches after 2026-09-03 (forward test)
     footy clv        closing-line value of the frozen rules on 2016-2026
+    footy push-picks send the latest picks to the live odds watcher (Raspberry Pi)
     footy all        fetch -> build -> report
 """
 
@@ -148,6 +149,14 @@ def _confirm(args) -> None:
                      indent=2, default=float))
 
 
+def _push_picks(args) -> None:
+    from .upcoming import OUT_DIR
+    from .watch.__main__ import main as watch_main
+
+    path = args.file or str(OUT_DIR / "picks.json")
+    watch_main(["push", path, "--url", args.url, "--token", args.token])
+
+
 def _clv(args) -> None:
     from .research import clv
 
@@ -227,6 +236,12 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("confirm", help="re-run the pre-registered market-surprise test")
     c.add_argument("--window", default="holdout", choices=["dev", "holdout"])
     c.set_defaults(func=_confirm)
+
+    pp = sub.add_parser("push-picks", help="send the latest picks to the odds watcher (e.g. on a Raspberry Pi)")
+    pp.add_argument("url", help="watcher address, e.g. http://raspberrypi.local:8080")
+    pp.add_argument("--token", default="", help="shared secret if the watcher has one")
+    pp.add_argument("--file", help="default: reports/upcoming/picks.json")
+    pp.set_defaults(func=_push_picks)
 
     cl = sub.add_parser("clv", help="closing-line value of the frozen rules (needs closing odds "
                                     "from football-data.co.uk)")

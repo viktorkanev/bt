@@ -107,6 +107,34 @@ schtasks /Create /TN "footy upcoming" /SC WEEKLY /D TUE,FRI /ST 18:00 ^
   return, closing-line value). Has a button to refresh results and fixtures.
 * **Ratings** and **Team news** (manual adjustments from `config/adjustments.yaml`).
 
+## Live odds watcher (Raspberry Pi)
+
+A small server that watches live prices and sends a phone notification when it
+finds a price worth betting. It uses only the Python standard library (about
+26 MB of memory), so it runs on a Raspberry Pi Zero 2 W.
+
+Two kinds of alert:
+
+* **Wrong odds (value):** a bookmaker or exchange price beats the margin-free
+  Pinnacle or Betfair Exchange price by your minimum edge (after commission).
+* **Research picks:** the picks from `footy upcoming` (F1 totals, F2 luck-fade
+  handicaps), re-priced against the live odds, at any handicap line on offer.
+
+Feeds: The Odds API (Pinnacle, Betfair Exchange and others; free tier 500
+credits a month) and the Betfair Exchange API (free delayed key). There is also
+a file feed for testing.
+
+```bash
+python -m footy.watch init-config       # writes watch.toml; add keys there (never committed)
+python -m footy.watch sports            # check the feed and list leagues
+python -m footy.watch notify-test       # check Telegram / ntfy
+python -m footy.watch run               # web page on http://<pi>:8080
+footy upcoming && footy push-picks http://raspberrypi.local:8080 --token <token>   # from your PC
+```
+
+Full Pi install (systemd service, ntfy/Telegram, credit maths) is in
+[`deploy/raspberry-pi/README.md`](deploy/raspberry-pi/README.md).
+
 ## How it works
 
 ```
@@ -165,10 +193,12 @@ src/footy/
   report.py    report tables;  report_html.py  static dashboard
   pipeline.py  build / predict / team-news adjustments
   cli.py       `footy` command
+  watch/       live odds watcher (stdlib only): providers, rules, alerts, web page
 app/dashboard.py   Streamlit app
 config/            adjustments.yaml
 docs/RESEARCH.md   research notes
 reports/latest/    generated report (CSV tables + index.html)
+deploy/raspberry-pi/  watcher service, example config, install guide
 tests/             pytest suite
 ```
 

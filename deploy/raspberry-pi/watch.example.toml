@@ -1,0 +1,63 @@
+# footy-watch configuration. Secrets can also be set as environment variables
+# (FOOTY_ODDSAPI_KEY, FOOTY_BETFAIR_APP_KEY, FOOTY_BETFAIR_USERNAME, FOOTY_BETFAIR_PASSWORD,
+#  FOOTY_TELEGRAM_TOKEN, FOOTY_TELEGRAM_CHAT_ID, FOOTY_NTFY_TOPIC, FOOTY_WATCH_TOKEN).
+
+[server]
+host = "0.0.0.0"          # reachable from your phone on the home network
+port = 8080
+token = ""                # optional shared secret required by `footy push-picks --token`
+db = "footy-watch.db"
+picks_file = "picks.json"
+timezone = "Europe/Sofia" # times in alerts and on the status page
+
+[alerts]
+# "Wrong odds": a target book's price (after commission) beats the reference's
+# no-margin price by at least min_edge. Reference books are tried in order.
+reference_books = ["pinnacle", "betfair_ex_eu", "betfair"]
+# Books you can actually bet at. Pinnacle is available through BetInAsia, so to be
+# told when Pinnacle itself is out of line with the exchange, list "pinnacle" here
+# and put the exchange first in reference_books.
+target_books = ["*"]
+pick_books = ["*"]
+markets = ["1x2", "ou", "ah"]
+min_edge = 0.03
+max_edge = 0.25           # bigger "edges" are usually stale prices or feed errors
+lookahead_hours = 36
+max_quote_age_minutes = 30
+min_exchange_size = 20    # ignore exchange prices with less money available
+cooldown_minutes = 240    # repeat an alert only after this, or if the edge grows by reprice_step
+reprice_step = 0.01
+
+[commission]              # on net winnings
+betfair_ex_eu = 0.05
+betfair = 0.05
+matchbook = 0.02
+
+# ---------------------------------------------------------------- feeds
+[oddsapi]                 # https://the-odds-api.com : Pinnacle + Betfair Exchange + many books
+enabled = false
+api_key = ""
+regions = "eu"            # "eu" includes pinnacle and betfair_ex_eu
+markets = ["h2h", "totals", "spreads"]
+bookmakers = []           # e.g. ["pinnacle", "betfair_ex_eu"] to limit the feed (cheaper)
+monthly_credits = 500     # your plan; polling is spaced so credits last the month
+min_interval_seconds = 600
+
+[betfair]                 # Betfair Exchange API: free delayed key (prices 1-180 s late)
+enabled = false
+app_key = ""
+username = ""
+password = ""
+interval_seconds = 30
+competitions = []         # Betfair competition ids; empty = all football in lookahead
+
+[file]                    # read odds from a JSON file written by another program
+enabled = false
+path = "odds.json"
+
+[notify]
+console = true
+telegram_token = ""       # create a bot with @BotFather; send it a message; chat id from getUpdates
+telegram_chat_id = ""
+ntfy_topic = ""           # or install the ntfy app and subscribe to a hard-to-guess topic name
+ntfy_server = "https://ntfy.sh"

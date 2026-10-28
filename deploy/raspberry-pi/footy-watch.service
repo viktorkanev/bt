@@ -1,0 +1,16 @@
+[Unit]
+Description=footy live odds watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/bt
+Environment=PYTHONPATH=/home/pi/bt/src
+ExecStart=/usr/bin/python3 -m footy.watch run --config /home/pi/bt/watch.toml
+Restart=always
+RestartSec=20
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

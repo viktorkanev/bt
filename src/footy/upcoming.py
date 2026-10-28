@@ -252,6 +252,17 @@ def _calibrate_supremacy(lh, la, line, target_home_be, rho, iters: int = 40) -> 
     return (lo + hi) / 2
 
 
+def kickoff_utc(date, time) -> str:
+    """football-data.co.uk kick-off times are UK local time; return ISO UTC."""
+    t = _txt(time)[:5] or "15:00"
+    local = pd.Timestamp(f"{pd.Timestamp(date):%Y-%m-%d} {t}")
+    try:
+        local = local.tz_localize("Europe/London", ambiguous=True, nonexistent="shift_forward")
+    except Exception:  # noqa: BLE001
+        local = local.tz_localize("UTC")
+    return local.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _commission_needed(book_odds) -> np.ndarray:
     """Exchange price needed to match a bookmaker price after commission."""
     c = forward.COMMISSION["bfe"]
@@ -300,6 +311,8 @@ def pick_details(fx: pd.DataFrame, spec: dict) -> pd.DataFrame:
         mk = _ah_side_outcomes(lh + s0 / 2, la - s0 / 2, line, side, rho)
         rs = _ah_side_outcomes(lh + s1 / 2, la - s1 / 2, line, side, rho)
         be, be_mkt = _break_even(rs), _break_even(mk)
+        diffs, pgd_res = goal_diff_dist(score_matrix(np.clip(lh + s1 / 2, 0.05, None),
+                                                     np.clip(la - s1 / 2, 0.05, None), rho))
         for i, (_, r) in enumerate(pk.iterrows()):
             col = "ahh" if side[i] == 0 else "aha"
             prices = {v: r.get(f"{v}_{col}", np.nan) for v in F2_VENUES}
@@ -324,6 +337,9 @@ def pick_details(fx: pd.DataFrame, spec: dict) -> pd.DataFrame:
                 "best_odds": float(prices[best_v]), "best_book": BOOK_NAMES.get(best_v, best_v),
                 "edge_at_best": edge, "status": "Bet" if edge > 0 else "Wait",
                 "reason": _luck_reason(r),
+                "kickoff_utc": kickoff_utc(r["date"], r["time"]), "market_code": "ah",
+                "side": "home" if side[i] == 0 else "away", "line": float(line[i]), "min_edge": 0.0,
+                "gd_dist": {int(d): round(float(p), 6) for d, p in zip(diffs, pgd_res[i]) if p > 1e-5},
             })
     # ---- F1 lower-division over/under picks and near misses
     po = fx[f"{f1['model']}_po25"]
@@ -367,11 +383,15 @@ def pick_details(fx: pd.DataFrame, spec: dict) -> pd.DataFrame:
             "reason": (f"Our goals model gives a {p_over:.0%} chance of 3+ goals against the market's "
                        f"{m_over:.0%}. It expects {'more' if more else 'fewer'} goals than priced; "
                        f"this rule has only been profitable below the top flight."),
+            "kickoff_utc": kickoff_utc(r["date"], r["time"]), "market_code": "ou",
+            "side": "over" if more else "under", "line": 2.5, "min_edge": float(f1["min_edge"]),
+            "gd_dist": None,
         })
     cols = ["match_id", "date", "time", "league", "league_name", "home", "away", "rule", "rule_name",
             "market", "selection", "our_prob", "market_prob", "push_prob", "lose_prob",
             "half_result_prob", "breakeven_odds", "market_fair_odds", "min_odds", "min_odds_exchange",
-            "best_odds", "best_book", "edge_at_best", "status", "reason"]
+            "best_odds", "best_book", "edge_at_best", "status", "reason", "kickoff_utc", "market_code",
+            "side", "line", "min_edge", "gd_dist"]
     out = pd.DataFrame(rows, columns=cols)
     if len(out):
         out = out.sort_values(["status", "date", "time", "league"],
@@ -490,7 +510,8 @@ def run(fetch: bool = True, out_dir: Path = OUT_DIR) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     table = fx[[c for c in SHOW if c in fx.columns]] if not fx.empty else pd.DataFrame(columns=SHOW)
     table.to_csv(out_dir / "fixtures.csv", index=False)
-    picks.to_csv(out_dir / "picks.csv", index=False)
+    picks.drop(columns=["gd_dist"]).to_csv(out_dir / "picks.csv", index=False)
+    (out_dir / "picks.json").write_text(json.dumps(watch_payload(picks), default=float), encoding="utf-8")
     meta = {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "results_through": str(matches.loc[matches["ftr"].notna(), "date"].max().date()),
             "fixtures": int(len(table)), "bets": int((picks["status"] == "Bet").sum()),
@@ -500,6 +521,21 @@ def run(fetch: bool = True, out_dir: Path = OUT_DIR) -> dict:
     (out_dir / "summary.json").write_text(json.dumps(meta, indent=2, default=float), encoding="utf-8")
     (out_dir / "index.html").write_text(render_html(table, meta, picks, ledger_rows), encoding="utf-8")
     return meta
+
+
+def watch_payload(picks: pd.DataFrame) -> dict:
+    """Picks in the format the live odds watcher (footy.watch) expects."""
+    out = []
+    for _, r in picks.iterrows():
+        item = {"rule": r["rule"], "rule_name": r["rule_name"], "kickoff": r["kickoff_utc"],
+                "league": r["league"], "league_name": r["league_name"], "home": r["home"],
+                "away": r["away"], "market": r["market_code"], "side": r["side"], "line": r["line"],
+                "selection": r["selection"], "min_edge": r["min_edge"], "reason": r["reason"],
+                "status": r["status"], "prob": float(r["our_prob"])}
+        if r["market_code"] == "ah":
+            item["gd_dist"] = {str(k): v for k, v in r["gd_dist"].items()}
+        out.append(item)
+    return {"generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "picks": out}
 
 
 def _txt(x) -> str:

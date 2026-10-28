@@ -7,3 +7,8 @@ __pycache__/
 data/*
 !data/.gitkeep
 .streamlit/secrets.toml
+# odds watcher: local config holds API keys and passwords, plus local state
+watch.toml
+*.db
+/picks.json
+/odds.json
