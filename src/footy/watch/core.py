@@ -303,6 +303,7 @@ def normalize(name: str) -> str:
         last, first = name.split(",")
         name = f"{first.strip()} {last.strip()}"
     s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"\b(?:[a-z]\.){2,}", lambda m: m.group(0).replace(".", ""), s)  # "f.c." -> "fc", not initials
     s = s.replace("&", " and ").replace("'", " ")
     s = re.sub(r"[^a-z0-9 ]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()

@@ -49,7 +49,10 @@ def test_ah_ev_matches_numpy_version():
                                  ("Wigan", "Wigan Athletic"), ("Inter", "Inter Milan"),
                                  # Polymarket uses full official names
                                  ("FC Internazionale Milano", "Inter Milan"), ("Stade Rennais FC 1901", "Rennes"),
-                                 ("Olympique Lyonnais", "Lyon")])
+                                 ("Olympique Lyonnais", "Lyon"),
+                                 # dotted club abbreviations are not a player's initials
+                                 ("Falkirk F.C.", "Falkirk"), ("Falkirk F.C.", "Falkirk FC"),
+                                 ("A.F.C. Bournemouth", "Bournemouth")])
 def test_team_names_match(a, b):
     assert name_score(a, b) >= 0.85
 
