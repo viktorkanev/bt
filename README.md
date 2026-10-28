@@ -127,6 +127,11 @@ key) and Polymarket (free, no key; its taker fee is included). There is also a
 file feed for testing. Besides football it covers baseball, basketball, ice
 hockey, tennis, volleyball, rugby and American football.
 
+Two **prediction-market strategies** need no bookmaker feed (page `/pm`):
+price-consistency arbitrage on Polymarket (outcomes that don't add up, ladders
+priced out of order) and daily temperature markets priced from weather-model
+ensembles plus the airport's own readings.
+
 A third alert type, **arbitrage**, fires when backing every outcome of a market at
 the best prices across all books returns more than the stake, whatever the result.
 

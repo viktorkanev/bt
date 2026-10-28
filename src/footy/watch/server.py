@@ -53,6 +53,17 @@ class Watcher:
             self.result_sources.append(FootballDataResults())
         self.next_settle = 0.0
         self._snapped: set[str] = set()
+        self.notify_lock = threading.Lock()  # the scanner thread notifies too
+        # prediction-market strategies (their own thread: a slow scan never delays the odds feeds)
+        from .pm import build_scanners
+        self.scanners = build_scanners(cfg)
+        self.pm = None
+        if self.scanners:
+            from .pm.ledger import PMBook
+            self.pm = PMBook(cfg["server"]["db"], cfg)
+        self.scan_next: dict[str, float] = {}
+        self.scan_info: dict[str, dict] = {}
+        self.next_pm_settle = 0.0
         self.load_picks()
 
     # ---------------------------------------------------------- picks
@@ -170,14 +181,65 @@ class Watcher:
             if self.state.should_send(al, now, a.get("cooldown_minutes", 240), a.get("reprice_step", 0.01)):
                 ev = self.index.events[al.event_id]
                 title, body = format_alert(al, ev.home, ev.away, tz)
-                if self.notifier.send(title, body, "high" if al.kind in ("pick", "arb") else "default",
-                                      link=alert_link(al)):
+                with self.notify_lock:
+                    delivered = self.notifier.send(title, body, "high" if al.kind in ("pick", "arb") else "default",
+                                                   link=alert_link(al))
+                if delivered:
                     self.state.record(al, now)  # undelivered alerts are tried again next time
                     sent.append(al)
         self.state.prune(now - timedelta(days=7))
         return sent
 
+    # ------------------------------------------------ prediction markets
+    def run_scanners(self, now=None, force: bool = False) -> list:
+        """Run each prediction-market strategy that is due; record and announce new positions."""
+        from .pm.notify import format_signal
+        now = now or utcnow()
+        placed = []
+        for sc in self.scanners:
+            if not force and time.time() < self.scan_next.get(sc.name, 0):
+                continue
+            info = {"last_run": now.isoformat(timespec="seconds"), "error": "", "signals": 0, "new": 0}
+            t0 = time.time()
+            try:
+                signals = sc.run(now)
+                info["signals"] = len(signals)
+                for sig in signals:
+                    row = self.pm.place(sig, now)
+                    if row is None:
+                        continue
+                    info["new"] += 1
+                    placed.append(sig)
+                    title, body = format_signal(sig, row)
+                    with self.notify_lock:
+                        self.notifier.send(title, body, "high" if sig.strategy == "consistency" else "default",
+                                           link=sig.link)
+            except Exception as e:  # noqa: BLE001
+                info["error"] = str(e)[:300]
+                log.warning("%s scan failed: %s", sc.name, e)
+            info["events"] = getattr(sc, "last_count", 0)
+            info["seconds"] = round(time.time() - t0, 1)
+            self.scan_info[sc.name] = info
+            self.scan_next[sc.name] = time.time() + sc.interval_s
+        if self.pm and (force or time.time() >= self.next_pm_settle):
+            try:
+                self.pm.settle(now)
+            except Exception as e:  # noqa: BLE001
+                log.warning("prediction-market settlement failed: %s", e)
+            self.next_pm_settle = time.time() + 60 * float(self.cfg.get("pm", {}).get("settle_every_minutes", 30))
+        return placed
+
+    def _scan_loop(self) -> None:
+        while True:
+            try:
+                self.run_scanners()
+            except Exception as e:  # noqa: BLE001
+                log.exception("scanner loop error: %s", e)
+            time.sleep(20)
+
     def run_forever(self) -> None:
+        if self.scanners:
+            threading.Thread(target=self._scan_loop, daemon=True, name="pm-scanners").start()
         loop = float(self.cfg["server"].get("loop_seconds", 5))
         while True:
             try:
@@ -205,7 +267,19 @@ class Watcher:
         return {"now": now.isoformat(timespec="seconds"), "started": self.started.isoformat(timespec="seconds"),
                 "providers": provs, "events": len(self.index.events), "quotes": len(self.quotes),
                 "picks": len(self.picks), "alerts_sent": self.notifier.sent,
-                "notify_error": self.notifier.last_error, "paper": paper}
+                "notify_error": self.notifier.last_error, "paper": paper, "scanners": self.scan_info,
+                "pm": self.pm_summary()}
+
+    def pm_summary(self) -> dict:
+        if not self.pm:
+            return {}
+        from .pm.ledger import summarize as pm_summarize
+        start = float(self.cfg.get("pm", {}).get("bankroll", 1000))
+        out = {}
+        for sc in self.scanners:
+            s = pm_summarize(self.pm.positions(strategy=sc.name), start)
+            out[sc.name] = {k: s[k] for k in ("positions", "settled", "open", "profit", "roi", "avg_edge", "bankroll")}
+        return out
 
 
 # ------------------------------------------------------------------- web
@@ -258,6 +332,17 @@ def render(w: Watcher) -> str:
                          f" <span class='muted'>({ps['bets']} bets)</span>")
         paper_html = (f"<a class='chip paperlink' href='/paper'><b>Paper trading →</b><br>"
                       f"<span class='small'>{' · '.join(parts)}</span></a>")
+    if st.get("pm"):
+        from .pm.ledger import STRATEGIES
+        parts = []
+        for name, ps in st["pm"].items():
+            pl = ps["profit"]
+            parts.append(f"{e(STRATEGIES.get(name, name))} <b>{'+' if pl >= 0 else '−'}${abs(pl):,.2f}</b>"
+                         f" <span class='muted'>({ps['positions']} position{'' if ps['positions'] == 1 else 's'})</span>")
+        errs = "".join(f"<div class='err small'>{e(n)}: {e(i['error'])}</div>"
+                       for n, i in st.get("scanners", {}).items() if i.get("error"))
+        paper_html += (f"<a class='chip paperlink' href='/pm'><b>Prediction markets →</b><br>"
+                       f"<span class='small'>{' · '.join(parts)}</span>{errs}</a>")
     prow = []
     for row in w.pick_status:
         pk, b = row["pick"], row["best"]
@@ -343,6 +428,15 @@ def make_handler(w: Watcher):
             elif path == "/api/paper.csv" and w.paper:
                 from .paper_web import paper_csv
                 self._send(200, paper_csv(w), "text/csv")
+            elif path == "/pm" and w.pm:
+                from .pm.web import render_pm
+                self._send(200, render_pm(w, CSS, qs.get("strategy", [""])[0]), "text/html")
+            elif path == "/api/pm" and w.pm:
+                self._send(200, json.dumps({"summary": w.pm_summary(), "scanners": w.scan_info,
+                                            "positions": w.pm.positions()}, default=str))
+            elif path == "/api/pm.csv" and w.pm:
+                from .pm.web import pm_csv
+                self._send(200, pm_csv(w), "text/csv")
             elif path == "/api/status":
                 self._send(200, json.dumps({**w.status(), "pick_status": w.pick_status}, default=str))
             elif path == "/api/alerts":

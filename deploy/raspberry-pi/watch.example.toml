@@ -115,3 +115,27 @@ strategies = ["*"]        # or e.g. ["F1", "F2"] to leave out the "wrong odds" b
 best_books = ["*"]        # limit "best price" to books you can use, e.g. ["pinnacle", "betfair_ex_eu", "sport888"]
 closing_snapshot_minutes = 10   # the-odds-api: one extra request per match ~10 min before kickoff (3 credits)
 void_after_days = 7       # no result found by then -> stake returned
+
+# ------------------------------------------------- prediction markets (no bookmaker feed)
+# Page: http://<pi>:8080/pm   Try once: python3 -m footy.watch scan
+[pm]
+bankroll = 1000           # imaginary dollars per strategy
+fee_rate = 0.05           # Polymarket taker fee: rate * p * (1 - p) per share
+
+[consistency]             # prices that contradict each other: a locked-in profit whatever happens
+enabled = false
+interval_minutes = 20
+max_days = 45             # only events resolving within this many days
+min_edge = 0.01           # at least 1% after fees...
+min_apy = 0.15            # ...and 15% a year, since the money waits for resolution
+min_leg_size = 20         # dollars on offer at the price on every leg
+stake = 100
+exclude_tags = ["1"]      # "1" = Sports (match props are huge and rarely contradict)
+
+[weather]                 # daily temperature markets vs weather-model ensembles
+enabled = false
+interval_minutes = 30
+min_edge = 0.08
+sigma_f = 1.6             # extra uncertainty in °F for station vs model grid
+stake = 10
+# stations = { "Paris" = "LFPG" }   # only if a market's rules don't name its station

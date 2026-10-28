@@ -257,6 +257,7 @@ def test_watcher_imports_without_heavy_dependencies():
     import sys
     code = ("import sys, importlib; sys.modules['pandas'] = None; sys.modules['numpy'] = None; "
             "[importlib.import_module(m) for m in ('footy.watch.core', 'footy.watch.providers', "
-            "'footy.watch.rules', 'footy.watch.server', 'footy.watch.paper', 'footy.watch.paper_web', "
+            "'footy.watch.rules', 'footy.watch.server', 'footy.watch.paper', 'footy.watch.paper_web', 'footy.watch.pm.consistency', "
+            "'footy.watch.pm.weather', 'footy.watch.pm.web', 'footy.watch.pm.ledger', "
             "'footy.watch.__main__')]")
     subprocess.run([sys.executable, "-c", code], check=True)

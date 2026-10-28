@@ -68,6 +68,25 @@ DEFAULTS: dict = {
     "file": {"enabled": False, "path": "odds.json", "interval_seconds": 30},
     "notify": {"console": True, "telegram_token": "", "telegram_chat_id": "", "ntfy_topic": "",
                "ntfy_server": "https://ntfy.sh"},
+    # prediction-market strategies (Polymarket, no bookmaker feed needed)
+    "pm": {"bankroll": 1000.0,       # imaginary dollars per strategy
+           "fee_rate": 0.05,         # taker fee rate: rate * p * (1 - p) per share
+           "settle_every_minutes": 30, "min_position": 2.0},
+    "consistency": {"enabled": False, "interval_minutes": 20,
+                    "max_days": 45,          # only events resolving within this many days
+                    "min_edge": 0.01,        # locked-in profit after fees
+                    "min_apy": 0.15,         # ...and per year, since the money waits for resolution
+                    "min_leg_size": 20,      # dollars on offer at the price, on every leg
+                    "stake": 100,            # imaginary dollars per arbitrage
+                    "exclude_tags": ["1"],   # Gamma tag ids skipped; "1" = Sports (huge prop catalogues)
+                    "max_signals": 20},
+    "weather": {"enabled": False, "interval_minutes": 30, "lookahead_days": 2,
+                "min_edge": 0.08, "min_prob": 0.10,
+                "sigma_f": 1.6,              # extra error (°F) for model grid vs station and rounding
+                "max_disagreement_f": 6.0,   # skip when model and market are this far apart (wrong station?)
+                "models": ["gfs_seamless", "ecmwf_ifs025", "icon_seamless"],
+                "use_metar": True, "stations": {}, "tag_slug": "weather", "tag_id": "",
+                "stake": 10, "max_signals": 10},
     "paper": {
         "enabled": True,
         "bankroll": 1000.0, "currency": "€",

@@ -1,4 +1,4 @@
-"""python -m footy.watch {run,check,sports,polymarket,oddspapi,notify-test,init-config,push,paper,paper-reset}"""
+"""python -m footy.watch {run,check,scan,sports,polymarket,oddspapi,notify-test,init-config,push,paper,paper-reset}"""
 
 from __future__ import annotations
 
@@ -36,6 +36,10 @@ def main(argv: list[str] | None = None) -> int:
                                                     "rugbyunion, rugbyleague, americanfootball")
     p.add_argument("--save", default="", help="folder to save the raw responses in (send them if parsing fails)")
     p.add_argument("--bookmakers", action="store_true", help="also list bookmaker slugs (1 request)")
+    p = sub.add_parser("scan", help="run the prediction-market strategies once and print what they find")
+    p.add_argument("--config", default="watch.toml")
+    p.add_argument("--strategy", choices=["consistency", "weather"], default=None)
+    p.add_argument("--record", action="store_true", help="also record the positions (no notifications)")
     p = sub.add_parser("init-config", help="write an example watch.toml")
     p.add_argument("path", nargs="?", default="watch.toml")
     p = sub.add_parser("push", help="send picks.json (from `footy upcoming`) to a running watcher")
@@ -72,6 +76,32 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{s.get('group', ''):<16} {s['key']:<45} {s.get('title', ''):<35} "
                   f"{'active' if s.get('active') else '':<7} {mapped}")
         print(f"credits remaining: {prov.remaining}")
+        return 0
+    if args.cmd == "scan":
+        from .core import utcnow
+        from .pm import build_scanners
+        for name in ("consistency", "weather"):
+            if args.strategy in (None, name):
+                cfg[name]["enabled"] = True
+            elif args.strategy:
+                cfg[name]["enabled"] = False
+        now = utcnow()
+        book = None
+        if args.record:
+            from .pm.ledger import PMBook
+            book = PMBook(cfg["server"]["db"], cfg)
+        for sc in build_scanners(cfg):
+            import time as _t
+            t0 = _t.time()
+            sigs = sc.run(now)
+            print(f"\n{sc.name}: {sc.last_count} events scanned in {_t.time() - t0:.0f} s, {len(sigs)} opportunities")
+            for sg in sigs:
+                print(f"  {100 * sg.edge:+6.1f}%  {(100 * sg.apy if sg.apy else 0):6.0f}%/yr  {sg.title[:70]}")
+                print(f"           {sg.detail[:200]}")
+                if sg.link:
+                    print(f"           {sg.link}")
+                if book:
+                    book.place(sg, now)
         return 0
     if args.cmd == "oddspapi":
         from collections import Counter
@@ -183,8 +213,9 @@ def main(argv: list[str] | None = None) -> int:
 
     from .server import Watcher, serve
     w = Watcher(cfg)
-    if not w.providers:
-        print("no providers enabled; set enabled = true for oddsapi, betfair or file in the config")
+    if not w.providers and not w.scanners:
+        print("nothing enabled; set enabled = true for oddsapi, betfair, oddspapi, polymarket, file, "
+              "consistency or weather in the config")
         return 1
     if args.cmd == "check":
         w.notifier.cfg = {"console": False}

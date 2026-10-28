@@ -223,3 +223,37 @@ If prices don't show up, send the files in `oddspapi-samples/` (they contain no 
 Results for paper bets: The Odds API scores and football-data settle by final
 score; the Betfair feed settles winner markets in any sport from Betfair's own
 result. Tennis and volleyball bets need the Betfair feed for that.
+
+## 9. Prediction markets: price consistency and weather
+
+Two strategies that need no bookmaker feed and no API key, only Polymarket's
+public data (plus free weather data). Each is off until you enable it, keeps its
+own imaginary bankroll, and settles from Polymarket's own resolution. Page:
+`http://raspberrypi.local:8080/pm`. Try them once from the terminal with
+`python3 -m footy.watch scan` (add `--strategy weather` or `--strategy consistency`).
+
+**Price consistency** looks for prices that contradict each other, so the right
+combination pays out more than it costs whatever happens:
+
+* outcomes of one event (exactly one wins) that don't add up: every outcome YES for
+  less than $1, or every outcome NO for less than $(n-1);
+* ladders: "Bitcoin above $110k" priced above "above $100k", or "by March"
+  above "by June". YES on the wider plus NO on the narrower pays at least $1.
+
+A 2025 study estimated about $40M was taken from Polymarket this way, so bots
+compete; what's left is in new and thin markets. The money waits until the market
+resolves, so an opportunity also has to clear `min_apy` (15% a year by default).
+Buy every leg, the thinnest first; a half-filled arbitrage is just a bet.
+
+**Weather** prices the daily "highest temperature in <city>" markets. For each
+market it reads the airport station from the rules, takes the GFS, ECMWF and ICON
+ensemble members from Open-Meteo for that spot, and for today uses the highest
+temperature already reported (METAR) as a floor. It learns each station's bias
+from past days. A range is a bet when the model's probability beats the price by
+`min_edge` (8%) after the fee; if the model and the market are more than 6°F apart
+it skips the market, since that usually means a wrong station or unit.
+Books are thin, so stakes stay small; results come back daily, so a few weeks of
+paper trading show whether it works.
+
+The scans run in their own thread, so they never slow the odds feeds down. Each
+uses filtered, small requests (one scan: a few MB), which a Pi Zero 2 W handles.

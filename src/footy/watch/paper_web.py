@@ -48,8 +48,8 @@ var el=document.getElementById('pchart');if(!el)return;
 var raw=JSON.parse(document.getElementById('pchart-data').textContent);
 var cur=el.getAttribute('data-cur');var NS='http://www.w3.org/2000/svg';
 var pts=[{n:0,actual:0,ev:0,clv:0,band:0,when:'',match:'Start',status:'',profit:0}].concat(raw);
-var S=[{k:'actual',name:'Actual profit',c:'var(--s1)',d:''},{k:'ev',name:'Expected (EV when bet)',c:'var(--s2)',d:'6 4'},
-{k:'clv',name:'Expected (closing line)',c:'var(--s3)',d:'2 3'}];
+var S=JSON.parse(el.getAttribute('data-series')||'null')||[{k:'actual',name:'Actual profit',c:'var(--s1)',d:''},
+{k:'ev',name:'Expected (EV when bet)',c:'var(--s2)',d:'6 4'},{k:'clv',name:'Expected (closing line)',c:'var(--s3)',d:'2 3'}];
 function money(v){var a=Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 return (v<0?'−':'+')+cur+a;}
 function mk(t,a,p){var e=document.createElementNS(NS,t);for(var k in a)e.setAttribute(k,a[k]);if(p)p.appendChild(e);return e;}
