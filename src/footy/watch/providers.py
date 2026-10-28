@@ -20,15 +20,28 @@ import json
 import logging
 import re
 import time
+from collections import defaultdict
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
-from .core import EventIndex, Quote, match_event, name_score, parse_time, utcnow
+from .core import EventIndex, Quote, match_event, name_score, orient, parse_time, utcnow
 
 log = logging.getLogger(__name__)
 UA = {"User-Agent": "footy-watch/0.1"}
+
+# the-odds-api sport key prefix -> our sport name
+ODDSAPI_KINDS = {"soccer": "soccer", "basketball": "basketball", "baseball": "baseball", "icehockey": "icehockey",
+                 "tennis": "tennis", "rugbyleague": "rugbyleague", "rugbyunion": "rugbyunion",
+                 "americanfootball": "americanfootball", "volleyball": "volleyball"}
+# Betfair event type ids
+BETFAIR_EVENT_TYPES = {"soccer": "1", "tennis": "2", "rugbyunion": "5", "rugbyleague": "1477", "baseball": "7511",
+                       "basketball": "7522", "icehockey": "7524", "americanfootball": "6423", "volleyball": "998917"}
+
+
+def oddsapi_sport_kind(key: str) -> str:
+    return ODDSAPI_KINDS.get(str(key).split("_", 1)[0], "soccer")
 
 
 def http_json(url: str, data: bytes | None = None, headers: dict | None = None,
@@ -60,6 +73,8 @@ class OddsAPIProvider:
         self._events: dict[str, list[dict]] = {}
         self._events_at = 0.0
         self.bad_sports: set[str] = set()
+        self.groups = set(cfg.get("groups", []))
+        self._groups_at = 0.0
         self.scores_refresh_s = float(cfg.get("scores_refresh_minutes", 180)) * 60
         self._scores: dict[str, tuple[float, list[dict]]] = {}
         self.last_error = ""
@@ -76,15 +91,31 @@ class OddsAPIProvider:
             except ValueError:
                 pass
 
-    def list_sports(self) -> list[dict]:
+    def list_sports(self, soccer_only: bool = False) -> list[dict]:
+        """Every sport key on the account (this endpoint costs no credits)."""
         data, h = http_json(self._url("/sports", all="true"))
         self._track(h)
-        return [s for s in data if str(s.get("key", "")).startswith("soccer")]
+        data = data if isinstance(data, list) else []
+        return [s for s in data if str(s.get("key", "")).startswith("soccer")] if soccer_only else data
+
+    def _add_groups(self) -> None:
+        """Add every active sport key in the configured groups (e.g. "Tennis" lists each tournament)."""
+        if not self.groups or time.time() - self._groups_at < 12 * 3600:
+            return
+        try:
+            for s in self.list_sports():
+                if s.get("group") in self.groups and s.get("active") and not s.get("has_outrights"):
+                    self.sports.setdefault(s["key"], s["key"])
+            self._groups_at = time.time()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"sports list: {e}"
+            log.warning(self.last_error)
 
     def refresh_events(self, force: bool = False) -> None:
         if not force and time.time() - self._events_at < self.events_refresh_s:
             return
-        for sport in self.sports:
+        self._add_groups()
+        for sport in list(self.sports):
             if sport in self.bad_sports:
                 continue
             try:
@@ -198,11 +229,17 @@ class OddsAPIProvider:
     def parse(cls, data: list[dict], index: EventIndex, league: str | None = None,
               sport: str | None = None) -> list[Quote]:
         out: list[Quote] = []
+        kind = oddsapi_sport_kind(sport or "soccer")
         for e in data:
             home, away = e["home_team"], e["away_team"]
-            ev = index.add(cls.name, e["id"], home, away, parse_time(e["commence_time"]), league)
+            ev, swapped = index.add_oriented(cls.name, e["id"], home, away, parse_time(e["commence_time"]),
+                                             league, kind)
             if sport:
                 ev.meta["oddsapi_sport"] = sport
+
+            def add(market, line, outcome, book, price, upd):
+                line, outcome = orient(market, line, outcome, swapped)
+                out.append(Quote(ev.id, market, line, outcome, book, price, upd))
             for bk in e.get("bookmakers", []):
                 book = bk["key"]
                 for mk in bk.get("markets", []):
@@ -211,18 +248,21 @@ class OddsAPIProvider:
                         continue
                     upd = parse_time(mk.get("last_update") or bk.get("last_update")) \
                         if (mk.get("last_update") or bk.get("last_update")) else None
-                    for o in mk.get("outcomes", []):
+                    outs = mk.get("outcomes", [])
+                    if market == "1x2" and not any(o.get("name") == "Draw" for o in outs):
+                        market = "ml"  # two-way winner (overtime / extra innings included)
+                    for o in outs:
                         name, price, point = o.get("name"), float(o["price"]), o.get("point")
-                        if market == "1x2":
+                        if market in ("1x2", "ml"):
                             outcome = "home" if name == home else "away" if name == away else "draw"
-                            out.append(Quote(ev.id, "1x2", None, outcome, book, price, upd))
+                            add(market, None, outcome, book, price, upd)
                         elif market == "ou":
-                            out.append(Quote(ev.id, "ou", float(point), str(name).lower(), book, price, upd))
+                            add("ou", float(point), str(name).lower(), book, price, upd)
                         else:  # spreads: point is that team's handicap -> express as home line
                             if name == home:
-                                out.append(Quote(ev.id, "ah", float(point), "home", book, price, upd))
+                                add("ah", float(point), "home", book, price, upd)
                             elif name == away:
-                                out.append(Quote(ev.id, "ah", -float(point), "away", book, price, upd))
+                                add("ah", -float(point), "away", book, price, upd)
         return out
 
 
@@ -232,9 +272,11 @@ class BetfairProvider:
     LOGIN = "https://identitysso.betfair.com/api/login"
     KEEPALIVE = "https://identitysso.betfair.com/api/keepAlive"
     API = "https://api.betfair.com/exchange/betting/rest/v1.0"
-    MARKET_TYPES = ("MATCH_ODDS", "OVER_UNDER_25", "ASIAN_HANDICAP")
+    MARKET_TYPES = ("MATCH_ODDS", "OVER_UNDER_25", "ASIAN_HANDICAP")   # football
+    OTHER_MARKET_TYPES = ("MATCH_ODDS", "MONEY_LINE")                   # other sports: winner only
 
     def __init__(self, cfg: dict):
+        self.sports = [x for x in cfg.get("sports", ["soccer"]) if x in BETFAIR_EVENT_TYPES] or ["soccer"]
         self.app_key = cfg.get("app_key", "")
         self.username = cfg.get("username", "")
         self.password = cfg.get("password", "")
@@ -272,16 +314,22 @@ class BetfairProvider:
     def _refresh_catalogue(self, now: datetime) -> None:
         if time.time() - self._catalogue_at < self.catalogue_refresh_s and self._catalogue:
             return
-        flt = {"eventTypeIds": ["1"], "marketTypeCodes": list(self.MARKET_TYPES),
-               "marketStartTime": {"from": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                   "to": (now + timedelta(hours=self.lookahead_h)).strftime("%Y-%m-%dT%H:%M:%SZ")}}
-        if self.competitions:
-            flt["competitionIds"] = self.competitions
-        cat = self._call("listMarketCatalogue", {
-            "filter": flt, "maxResults": 1000, "sort": "FIRST_TO_START",
-            "marketProjection": ["EVENT", "COMPETITION", "MARKET_START_TIME", "RUNNER_DESCRIPTION",
-                                 "MARKET_DESCRIPTION"]})
-        self._catalogue = {m["marketId"]: m for m in cat or []}
+        window = {"from": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "to": (now + timedelta(hours=self.lookahead_h)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        catalogue: dict[str, dict] = {}
+        for sport in self.sports:  # one call per sport keeps each under the 1000-market cap
+            flt = {"eventTypeIds": [BETFAIR_EVENT_TYPES[sport]], "marketStartTime": window,
+                   "marketTypeCodes": list(self.MARKET_TYPES if sport == "soccer" else self.OTHER_MARKET_TYPES)}
+            if self.competitions and sport == "soccer":
+                flt["competitionIds"] = self.competitions
+            cat = self._call("listMarketCatalogue", {
+                "filter": flt, "maxResults": 1000, "sort": "FIRST_TO_START",
+                "marketProjection": ["EVENT", "EVENT_TYPE", "COMPETITION", "MARKET_START_TIME",
+                                     "RUNNER_DESCRIPTION", "MARKET_DESCRIPTION"]})
+            for m in cat or []:
+                m.setdefault("eventType", {"id": BETFAIR_EVENT_TYPES[sport]})
+                catalogue[m["marketId"]] = m
+        self._catalogue = catalogue
         self._catalogue_at = time.time()
 
     def poll(self, index: EventIndex, now: datetime | None = None) -> list[Quote]:
@@ -300,25 +348,46 @@ class BetfairProvider:
     def parse(cls, catalogue: list[dict], books: list[dict], index: EventIndex,
               book: str = "betfair") -> list[Quote]:
         cat = {m["marketId"]: m for m in catalogue}
+        kinds = {v: k for k, v in BETFAIR_EVENT_TYPES.items()}
         out: list[Quote] = []
         for mb in books:
             m = cat.get(mb.get("marketId"))
             if not m or mb.get("status") not in (None, "OPEN") or mb.get("inplay"):
                 continue
             ev_name = m["event"]["name"]
-            if " v " not in ev_name:
+            sep = " v " if " v " in ev_name else " @ " if " @ " in ev_name else None
+            if sep is None:
                 continue
-            home, away = [x.strip() for x in ev_name.split(" v ", 1)]
-            ev = index.add(cls.name, m["event"]["id"], home, away,
-                           parse_time(m.get("marketStartTime") or m["event"]["openDate"]))
+            home, away = [x.strip() for x in ev_name.split(sep, 1)]
+            if sep == " @ ":  # US style "Away @ Home"
+                home, away = away, home
+            sport = kinds.get(str(m.get("eventType", {}).get("id", "1")), "soccer")
+            ev, swapped = index.add_oriented(cls.name, m["event"]["id"], home, away,
+                                             parse_time(m.get("marketStartTime") or m["event"]["openDate"]),
+                                             sport=sport)
             names = {(r["selectionId"], float(r.get("handicap", 0.0))): r["runnerName"]
                      for r in m.get("runners", [])}
             sel_names = {r["selectionId"]: r["runnerName"] for r in m.get("runners", [])}
-            mtype = m.get("description", {}).get("marketType") or m.get("marketType") or \
-                ("MATCH_ODDS" if m.get("marketName") == "Match Odds" else "")
+            mtype = m.get("description", {}).get("marketType") or m.get("marketType") or ""
             if not mtype:
                 mtype = {"Match Odds": "MATCH_ODDS", "Over/Under 2.5 Goals": "OVER_UNDER_25",
-                         "Asian Handicap": "ASIAN_HANDICAP"}.get(m.get("marketName"), "")
+                         "Asian Handicap": "ASIAN_HANDICAP", "Moneyline": "MONEY_LINE"}.get(m.get("marketName"), "")
+            has_draw = any(str(n).lower() in ("the draw", "draw", "tie") for n in sel_names.values())
+            winner_market = "1x2" if (mtype == "MATCH_ODDS" and has_draw) else "ml"
+
+            def side(rn: str) -> str | None:
+                if str(rn).lower() in ("the draw", "draw", "tie"):
+                    return "draw"
+                sh, sa = name_score(rn, home), name_score(rn, away)
+                return None if max(sh, sa) < 0.6 else ("home" if sh >= sa else "away")
+
+            if mtype in ("MATCH_ODDS", "MONEY_LINE"):  # remembered so the result can settle paper bets
+                sel = {}
+                for sid, rn in sel_names.items():
+                    o = side(rn)
+                    if o:
+                        sel[str(sid)] = orient(winner_market, None, o, swapped)[1]
+                ev.meta.setdefault("betfair_markets", {})[winner_market] = {"id": m["marketId"], "sel": sel}
             for r in mb.get("runners", []):
                 if r.get("status") not in (None, "ACTIVE"):
                     continue
@@ -331,19 +400,51 @@ class BetfairProvider:
                 lay_p = float(lay[0]["price"]) if lay else None
                 hc = float(r.get("handicap", 0.0))
                 rn = names.get((r["selectionId"], hc)) or sel_names.get(r["selectionId"], "")
-                if mtype == "MATCH_ODDS":
-                    outcome = "draw" if rn.lower() in ("the draw", "draw") else \
-                        "home" if rn == home else "away" if rn == away else None
-                    if outcome:
-                        out.append(Quote(ev.id, "1x2", None, outcome, book, price, utcnow(), lay_p, size))
+                q = None
+                if mtype in ("MATCH_ODDS", "MONEY_LINE"):
+                    o = side(rn)
+                    if o and (o != "draw" or winner_market == "1x2"):
+                        q = (winner_market, None, o)
                 elif mtype == "OVER_UNDER_25":
-                    outcome = "over" if rn.lower().startswith("over") else "under"
-                    out.append(Quote(ev.id, "ou", 2.5, outcome, book, price, utcnow(), lay_p, size))
+                    q = ("ou", 2.5, "over" if rn.lower().startswith("over") else "under")
                 elif mtype == "ASIAN_HANDICAP":
-                    if rn == home:
-                        out.append(Quote(ev.id, "ah", hc, "home", book, price, utcnow(), lay_p, size))
-                    elif rn == away:
-                        out.append(Quote(ev.id, "ah", -hc, "away", book, price, utcnow(), lay_p, size))
+                    o = side(rn)
+                    if o == "home":
+                        q = ("ah", hc, "home")
+                    elif o == "away":
+                        q = ("ah", -hc, "away")
+                if q:
+                    line, outcome = orient(q[0], q[1], q[2], swapped)
+                    out.append(Quote(ev.id, q[0], line, outcome, book, price, utcnow(), lay_p, size))
+        return out
+
+    def results(self, bets: list[dict], now: datetime) -> list[dict]:
+        """Winners of settled Betfair winner markets: settles "1x2"/"ml" paper bets in any sport."""
+        want: dict[str, list[dict]] = defaultdict(list)
+        for b in bets:
+            info = (b.get("meta") or {}).get("betfair_markets", {}).get(b["market"])
+            if b["market"] in ("1x2", "ml") and info:
+                want[info["id"]].append((b, info))
+        if not want or not self.app_key:
+            return []
+        out = []
+        ids = list(want)
+        for i in range(0, len(ids), 40):
+            try:
+                books = self._call("listMarketBook", {"marketIds": ids[i:i + 40]}) or []
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"results: {e}"
+                log.warning(self.last_error)
+                continue
+            for mb in books:
+                if mb.get("status") != "CLOSED":
+                    continue
+                winners = [str(r["selectionId"]) for r in mb.get("runners", []) if r.get("status") == "WINNER"]
+                for b, info in want.get(mb.get("marketId"), []):
+                    if len(winners) == 1 and winners[0] in info["sel"]:
+                        out.append({"source": "betfair", "event_id": b["event_id"], "market": b["market"],
+                                    "winner": info["sel"][winners[0]], "home": b["home"], "away": b["away"],
+                                    "kickoff": parse_time(b["kickoff"])})
         return out
 
 
@@ -416,6 +517,14 @@ def _pm_time(s) -> datetime | None:
         return None
 
 
+# Polymarket sport codes (from /sports) -> our sport names; football is found by its tag
+POLY_KINDS = {"mlb": "baseball", "kbo": "baseball", "npb": "baseball", "nba": "basketball", "wnba": "basketball",
+              "ncaab": "basketball", "cbb": "basketball", "euroleague": "basketball", "nhl": "icehockey",
+              "khl": "icehockey", "shl": "icehockey", "nfl": "americanfootball", "cfb": "americanfootball",
+              "ncaaf": "americanfootball", "atp": "tennis", "wta": "tennis", "nrl": "rugbyleague",
+              "rugby": "rugbyunion", "urc": "rugbyunion", "top14": "rugbyunion", "volleyball": "volleyball"}
+
+
 class PolymarketProvider:
     """Polymarket football markets through the public Gamma (catalogue) and CLOB (order book) APIs.
 
@@ -431,13 +540,14 @@ class PolymarketProvider:
     def __init__(self, cfg: dict):
         self.book = cfg.get("book_name", "polymarket")
         self.sports = [str(x) for x in cfg.get("sports", [])]          # codes from /sports; [] = all football
+        self.kinds = {**POLY_KINDS, **{str(k): str(v) for k, v in cfg.get("sport_kinds", {}).items()}}
         self.series_ids = [str(x) for x in cfg.get("series_ids", [])]  # explicit override
         self.soccer_tag = str(cfg.get("soccer_tag", "100350"))
         self.markets = set(cfg.get("markets", ["moneyline", "totals", "spreads"]))
         self.lookahead_h = float(cfg.get("lookahead_hours", 36))
         self.min_interval = float(cfg.get("interval_seconds", 60))
         self.catalogue_refresh_s = float(cfg.get("catalogue_refresh_minutes", 15)) * 60
-        self._series: list[str] = []
+        self._series: dict[str, str] = {}
         self._series_at = 0.0
         self._events: list[dict] = []
         self._events_at = 0.0
@@ -451,27 +561,41 @@ class PolymarketProvider:
         return data if isinstance(data, list) else []
 
     def is_soccer(self, s: dict) -> bool:
-        if self.sports:
-            return str(s.get("sport", "")) in self.sports
         return self.soccer_tag in {t.strip() for t in str(s.get("tags", "")).split(",")}
 
-    def football_series(self) -> list[str]:
+    def kind_of(self, s: dict) -> str | None:
+        """Our sport name for a /sports entry, or None to skip it."""
+        code = str(s.get("sport", ""))
+        if self.sports and code not in self.sports:
+            return None
+        if self.is_soccer(s):
+            return "soccer"
+        return self.kinds.get(code) if self.sports else None
+
+    def series(self) -> dict[str, str]:
+        """series id -> sport."""
         if self.series_ids:
-            return self.series_ids
+            return {sid: "soccer" for sid in self.series_ids}
         if self._series and time.time() - self._series_at < 24 * 3600:
             return self._series
-        out = []
+        out: dict[str, str] = {}
         for s in self.list_sports():
-            if self.is_soccer(s):
-                out += [x.strip() for x in str(s.get("series", "")).split(",") if x.strip()]
-        self._series, self._series_at = sorted(set(out)), time.time()
-        return self._series
+            kind = self.kind_of(s)
+            if kind:
+                for x in str(s.get("series", "")).split(","):
+                    if x.strip():
+                        out[x.strip()] = kind
+        self._series, self._series_at = out, time.time()
+        return out
+
+    def football_series(self) -> list[str]:
+        return sorted(sid for sid, k in self.series().items() if k == "soccer")
 
     def _refresh_events(self, now: datetime) -> None:
         if self._events and time.time() - self._events_at < self.catalogue_refresh_s:
             return
         evs: list[dict] = []
-        for sid in self.football_series():
+        for sid, kind in sorted(self.series().items()):
             offset = 0
             while offset < 2000:
                 url = f"{self.GAMMA}/events?" + urllib.parse.urlencode(
@@ -483,6 +607,8 @@ class PolymarketProvider:
                     log.warning(self.last_error)
                     break
                 batch = data if isinstance(data, list) else (data or {}).get("data", [])
+                for e in batch:
+                    e["_sport"] = kind
                 evs += batch
                 if len(batch) < 100:
                     break
@@ -537,6 +663,13 @@ class PolymarketProvider:
             if max(sh, sa) < 0.6:
                 return []
             return [("1x2", None, "home" if sh >= sa else "away", yes)]
+        if smt == "moneyline" and "moneyline" in markets and len(outcomes) == 2 and low != ["yes", "no"]:
+            legs = []  # US-style game: one market, the two teams as outcomes
+            for name, tok in zip(outcomes, tokens):
+                sh, sa = name_score(name, home), name_score(name, away)
+                if max(sh, sa) >= 0.6:
+                    legs.append(("ml", None, "home" if sh >= sa else "away", tok))
+            return legs if {lg[2] for lg in legs} == {"home", "away"} else []
         if low == ["over", "under"] and "totals" in markets and smt in ("totals", ""):
             line = m.get("line")
             if line in (None, ""):
@@ -568,15 +701,13 @@ class PolymarketProvider:
             if not teams or ko is None:
                 continue
             home, away = teams
-            # follow another feed's home/away order if it lists the match the other way round
-            if match_event(home, away, ko, index.events.values()) is None and \
-                    match_event(away, home, ko, index.events.values()) is not None:
-                home, away = away, home
-            ev = index.add(cls.name, str(e.get("id")), home, away, ko)
+            ev, swapped = index.add_oriented(cls.name, str(e.get("id")), home, away, ko,
+                                             sport=e.get("_sport", "soccer"))
             for m in e.get("markets", []):
                 if m.get("closed") or m.get("active") is False or m.get("acceptingOrders") is False:
                     continue
-                for market, line, outcome, token in cls.legs(m, ev.home, ev.away, markets):
+                for market, line, outcome, token in cls.legs(m, home, away, markets):
+                    line, outcome = orient(market, line, outcome, swapped)
                     q = cls._quote(ev.id, market, line, outcome, token, books.get(token), m, book, now)
                     if q:
                         out.append(q)
@@ -608,8 +739,11 @@ PROVIDERS = {"oddsapi": OddsAPIProvider, "betfair": BetfairProvider, "polymarket
 
 
 def build(cfg: dict) -> list:
+    from .oddspapi import OddsPapiProvider  # imported here: it uses this module's http helper
     out = []
-    for name, cls in PROVIDERS.items():
+    order = {"oddsapi": OddsAPIProvider, "betfair": BetfairProvider, "oddspapi": OddsPapiProvider,
+             "polymarket": PolymarketProvider, "file": FileProvider}  # bookmakers first: they set home/away
+    for name, cls in order.items():
         section = cfg.get(name, {})
         if section.get("enabled"):
             out.append(cls(section))

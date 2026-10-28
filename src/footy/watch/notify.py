@@ -42,6 +42,10 @@ def format_alert(a: Alert, home: str, away: str, tzname: str = "UTC") -> tuple[s
     """(title, body) in plain words."""
     sel = a.selection(home, away)
     when = local_time(a.kickoff, tzname)
+    sport = getattr(a, "sport", "soccer") or "soccer"
+    if sport != "soccer":
+        from .core import sport_name
+        when = f"{sport_name(sport)} · {when}"
     if a.kind == "arb":
         from .rules import selection_text
         title = f"Arbitrage {a.edge:+.1%}: {a.match}"

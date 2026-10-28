@@ -32,7 +32,8 @@ import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from .core import (OUTCOMES, EventIndex, Quote, book_net_odds, fit_goals, grid_fair_odds, match_event, name_score,
+from .core import (OUTCOMES, SPORTS, EventIndex, Quote, book_net_odds, fit_goals, grid_fair_odds, match_event,
+                   name_score,
                    parse_time, profit, score_grid, settle)
 from .rules import Alert, ref_probs
 
@@ -71,7 +72,7 @@ def _balanced(pairs: dict[float, list[float]]) -> tuple[float, list[float]] | No
 
 
 def closing_fair(quotes: list[Quote], market: str, line, outcome: str, refs: list[str],
-                 max_spread: float = 0.05) -> tuple[float, str, str] | None:
+                 max_spread: float = 0.05, sport: str = "soccer") -> tuple[float, str, str] | None:
     """No-margin price of a selection from a reference book: (odds, book, how).
 
     Uses the same line when the reference offers it, otherwise moves the
@@ -84,7 +85,7 @@ def closing_fair(quotes: list[Quote], market: str, line, outcome: str, refs: lis
         probs = ref_probs(outs, outs_needed, max_spread)
         if probs:
             return 1 / probs[k], rb, "same line"
-    if market == "1x2":
+    if market in ("1x2", "ml") or sport != "soccer":  # the goals model only fits football
         return None
     for rb in refs:
         rq = [q for q in quotes if q.book == rb]
@@ -157,6 +158,9 @@ class FootballDataResults:
         return out
 
     def results(self, bets: list[dict], now: datetime) -> list[dict]:
+        bets = [b for b in bets if (b.get("sport") or "soccer") == "soccer"]  # football only
+        if not bets:
+            return []
         codes = {b.get("league") for b in bets} & set(FOOTBALL_DATA_CODES)
         if any(b.get("league") not in FOOTBALL_DATA_CODES for b in bets):
             codes = set(FOOTBALL_DATA_CODES)  # unknown league (e.g. a Betfair-only match): look everywhere
@@ -179,17 +183,35 @@ class FootballDataResults:
 
 
 def find_result(bet: dict, results: list[dict], tol_hours: float = 30.0) -> dict | None:
+    """The result that settles this bet.
+
+    Winner results (Betfair) settle only the same match and market. Final scores settle
+    only markets a score decides in that sport (not hockey's regular-time 1X2, not tennis).
+    A score listed the other way round (away team first) is turned around.
+    """
     ko = parse_time(bet["kickoff"])
+    sport = bet.get("sport") or "soccer"
     oid = (bet.get("meta") or {}).get("sources", {}).get("oddsapi")
+    market = bet.get("market") or "1x2"
+    score_ok = market in SPORTS.get(sport, SPORTS["soccer"])["score"]
     best, best_s = None, 0.0
     for r in results:
+        if "winner" in r:
+            if r.get("event_id") == bet.get("event_id") and r.get("market") == market:
+                return r
+            continue
+        if not score_ok:
+            continue
         if oid and r.get("id") == oid:
             return r
         if abs((r["kickoff"] - ko).total_seconds()) > tol_hours * 3600:
             continue
-        sh, sa = name_score(bet["home"], r["home"]), name_score(bet["away"], r["away"])
-        if min(sh, sa) >= 0.72 and sh + sa > best_s:
-            best, best_s = r, sh + sa
+        for flip in (False, True):
+            rh, ra = (r["away"], r["home"]) if flip else (r["home"], r["away"])
+            sh, sa = name_score(bet["home"], rh), name_score(bet["away"], ra)
+            if min(sh, sa) >= 0.72 and sh + sa > best_s:
+                best = {**r, "home_goals": r["away_goals"], "away_goals": r["home_goals"]} if flip else r
+                best_s = sh + sa
     return best
 
 
@@ -201,6 +223,10 @@ class PaperBook:
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(paper_bets)")}
+        if "sport" not in cols:  # databases from before multi-sport
+            self.db.execute("ALTER TABLE paper_bets ADD COLUMN sport TEXT DEFAULT 'soccer'")
+            self.db.commit()
         self.lock = threading.Lock()
         self._close_written: dict[int, tuple] = {}
 
@@ -265,6 +291,7 @@ class PaperBook:
                 home, away = (ev.home, ev.away) if ev else (a.match.split(" v ", 1) + [""])[:2]
                 meta = {"sources": dict(ev.sources) if ev else {}, **(ev.meta if ev else {})}
                 row = {
+                    "sport": ev.sport if ev else a.sport,
                     "placed": now.isoformat(timespec="seconds"), "strategy": code,
                     "strategy_name": self.strategy_of(a)[1], "venue": venue, "event_id": eid,
                     "home": home, "away": away, "league": a.extra.get("league") or a.league,
@@ -301,7 +328,8 @@ class PaperBook:
             home, away = (ev.home, ev.away) if ev else (a.match.split(" v ", 1) + [""])[:2]
             meta = json.dumps({"sources": dict(ev.sources) if ev else {}, **(ev.meta if ev else {})})
             total = float(self.p.get("arb_stake", 100.0))
-            rows = [{"placed": now.isoformat(timespec="seconds"), "strategy": "arb", "strategy_name": "Arbitrage",
+            rows = [{"sport": ev.sport if ev else a.sport,
+                     "placed": now.isoformat(timespec="seconds"), "strategy": "arb", "strategy_name": "Arbitrage",
                      "venue": "arb", "event_id": a.event_id, "home": home, "away": away, "league": a.league,
                      "kickoff": a.kickoff.isoformat(), "market": a.market, "line": a.line, "outcome": lg["outcome"],
                      "book": lg["book"], "price": lg["price"], "net_price": lg["net"], "fair_odds": a.price,
@@ -347,7 +375,7 @@ class PaperBook:
             ko = parse_time(b["kickoff"])
             eid = b["event_id"]
             if eid not in index.events:
-                ev = match_event(b["home"], b["away"], ko, index.events.values())
+                ev = match_event(b["home"], b["away"], ko, index.events.values(), sport=b.get("sport") or "soccer")
                 if ev is None:
                     continue
                 eid = ev.id
@@ -355,7 +383,8 @@ class PaperBook:
                   if (q.updated is None or (q.updated < ko and now - q.updated <= max_age))]
             if not qs:
                 continue
-            fair = closing_fair(qs, b["market"], b["line"], b["outcome"], refs, a.get("max_exchange_spread", 0.05))
+            fair = closing_fair(qs, b["market"], b["line"], b["outcome"], refs, a.get("max_exchange_spread", 0.05),
+                                b.get("sport") or "soccer")
             books = self.venue_books(b["venue"])
             vq = [q for q in qs if q.market == b["market"] and q.outcome == b["outcome"]
                   and _same_line(q.line, b["line"]) and ("*" in books or q.book in books)]
@@ -407,7 +436,11 @@ class PaperBook:
         n = 0
         for b in due:
             r = found.get(b["id"])
-            if r is not None:
+            if r is not None and "winner" in r:
+                res = 1.0 if r["winner"] == b["outcome"] else -1.0
+                vals = (STATUS[res], None, None, res, round(b["stake"] * profit(res, b["net_price"]), 4),
+                        r.get("source", ""))
+            elif r is not None:
                 res = settle(b["market"], b["line"], b["outcome"], r["home_goals"], r["away_goals"])
                 vals = (STATUS.get(res, "settled"), r["home_goals"], r["away_goals"], res,
                         round(b["stake"] * profit(res, b["net_price"]), 4), r.get("source", ""))

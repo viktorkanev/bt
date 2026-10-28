@@ -1,4 +1,4 @@
-"""python -m footy.watch {run,check,sports,polymarket,notify-test,init-config,push,paper,paper-reset}"""
+"""python -m footy.watch {run,check,sports,polymarket,oddspapi,notify-test,init-config,push,paper,paper-reset}"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name, hlp in (("run", "poll, alert and serve the status page"),
                       ("check", "poll every provider once and print what it found (no notifications)"),
-                      ("sports", "list the-odds-api soccer sport keys available to your key"),
+                      ("sports", "list the-odds-api sport keys (all sports, with their group)"),
                       ("polymarket", "list Polymarket sports and series ids (football marked) and test the feed"),
                       ("notify-test", "send a test notification"),
                       ("paper", "paper-trading results by place and strategy"),
@@ -28,6 +28,12 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--config", default="watch.toml")
         if name == "paper-reset":
             p.add_argument("--yes", action="store_true", help="really delete")
+    p = sub.add_parser("oddspapi", help="test the OddsPapi feed: requests left, leagues, markets, sample prices")
+    p.add_argument("--config", default="watch.toml")
+    p.add_argument("--sport", default="soccer", help="soccer, baseball, basketball, icehockey, tennis, volleyball, "
+                                                    "rugbyunion, rugbyleague, americanfootball")
+    p.add_argument("--save", default="", help="folder to save the raw responses in (send them if parsing fails)")
+    p.add_argument("--bookmakers", action="store_true", help="also list bookmaker slugs (1 request)")
     p = sub.add_parser("init-config", help="write an example watch.toml")
     p.add_argument("path", nargs="?", default="watch.toml")
     p = sub.add_parser("push", help="send picks.json (from `footy upcoming`) to a running watcher")
@@ -59,9 +65,55 @@ def main(argv: list[str] | None = None) -> int:
         from .providers import OddsAPIProvider
         prov = OddsAPIProvider(cfg["oddsapi"])
         for s in prov.list_sports():
-            mapped = cfg["oddsapi"]["sports"].get(s["key"], "")
-            print(f"{s['key']:<45} {s.get('title', ''):<35} {'active' if s.get('active') else '':<7} {mapped}")
+            mapped = "watched" if s["key"] in cfg["oddsapi"]["sports"] or s.get("group") in cfg["oddsapi"]["groups"] \
+                else ""
+            print(f"{s.get('group', ''):<16} {s['key']:<45} {s.get('title', ''):<35} "
+                  f"{'active' if s.get('active') else '':<7} {mapped}")
         print(f"credits remaining: {prov.remaining}")
+        return 0
+    if args.cmd == "oddspapi":
+        from collections import Counter
+        from .core import EventIndex, utcnow
+        from .oddspapi import OddsPapiProvider
+        prov = OddsPapiProvider(cfg["oddspapi"])
+        if args.save:
+            prov.dump_dir = Path(args.save)
+        now = utcnow()
+        print(f"requests used this month: {prov.used} of {prov.monthly}")
+        ids = prov.sport_ids()
+        print("sports found:", ", ".join(f"{k}={v}" for k, v in sorted(ids.items())) or "none")
+        if args.bookmakers:
+            bk = prov.get("/bookmakers")
+            items = bk if isinstance(bk, list) else []
+            print("bookmakers:", ", ".join(str(b.get("slug") or b.get("bookmaker") or b) for b in items[:400]))
+        sid = ids.get(args.sport)
+        if sid is None:
+            print(f"no sport called {args.sport}")
+            return 1
+        mmap = prov.market_map(sid)
+        total = prov.cache["markets"][str(sid)].get("total")
+        print(f"markets understood: {len(mmap)} of {total}: " +
+              ", ".join(f"{k} {v}" for k, v in Counter(m["market"] for m in mmap.values()).items()))
+        fx = prov.fixtures(args.sport, sid, now)
+        tids = prov.tournaments(args.sport, fx, now)
+        names = {f["tournamentId"]: f["tournament"] for f in fx.values()}
+        per = Counter(f["tournamentId"] for f in fx.values())
+        print(f"{len(fx)} upcoming fixtures; tournaments polled ({'configured' if prov.sports.get(args.sport) else 'busiest'}):")
+        for t in tids[:25]:
+            print(f"  {t:>8}  {per.get(t, 0):>3} fixtures  {names.get(t, '')}")
+        if tids:
+            data = prov.get("/odds-by-tournaments", tournamentIds=",".join(tids[:prov.per_request]),
+                            bookmakers=",".join(prov.bookmakers), verbosity=prov.verbosity)
+            idx = EventIndex()
+            qs = OddsPapiProvider.parse(data, fx, mmap, idx, args.sport, now, prov.book_names, prov.lookahead_h)
+            print(f"\n{len(idx.events)} matches, {len(qs)} prices: " +
+                  ", ".join(f"{k} {v}" for k, v in Counter((q.book, q.market) for q in qs).most_common(12)))
+            for ev in sorted(idx.events.values(), key=lambda e: e.kickoff)[:10]:
+                win = sorted((q for q in qs if q.event == ev.id and q.market in ("1x2", "ml")),
+                             key=lambda q: (q.book, q.outcome))
+                print(f"  {ev.kickoff:%a %d %b %H:%M} {ev.home} v {ev.away}: " +
+                      "  ".join(f"{q.book} {q.outcome} {q.price:.2f}" for q in win[:6]))
+        print(f"\nrequests used this month: {prov.used} of {prov.monthly}")
         return 0
     if args.cmd == "polymarket":
         from .core import EventIndex

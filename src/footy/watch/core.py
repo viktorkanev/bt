@@ -12,7 +12,43 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
-OUTCOMES = {"1x2": ("home", "draw", "away"), "ou": ("over", "under"), "ah": ("home", "away")}
+OUTCOMES = {"1x2": ("home", "draw", "away"), "ml": ("home", "away"), "ou": ("over", "under"),
+            "ah": ("home", "away")}
+
+# Per sport: the markets compared (only ones whose rules match across books) and the
+# ones a final score settles. "ml" is the two-way winner including overtime / extra
+# innings; "1x2" is the three-way result in regular time; "ah" a handicap in the
+# sport's scoring unit; "ou" a total. Tennis and volleyball handicaps and totals are
+# left out because books mix games/sets and points/sets.
+SPORTS = {
+    "soccer": {"name": "Football", "markets": {"1x2", "ou", "ah"}, "score": {"1x2", "ou", "ah"}},
+    "basketball": {"name": "Basketball", "markets": {"ml", "ou", "ah"}, "score": {"ml", "ou", "ah"}},
+    "baseball": {"name": "Baseball", "markets": {"ml", "ou", "ah"}, "score": {"ml", "ou", "ah"}},
+    "icehockey": {"name": "Ice hockey", "markets": {"ml", "1x2", "ou", "ah"}, "score": {"ml", "ou", "ah"}},
+    "americanfootball": {"name": "American football", "markets": {"ml", "ou", "ah"}, "score": {"ml", "ou", "ah"}},
+    "tennis": {"name": "Tennis", "markets": {"ml"}, "score": set()},
+    "volleyball": {"name": "Volleyball", "markets": {"ml"}, "score": set()},
+    "rugbyunion": {"name": "Rugby union", "markets": {"1x2", "ou", "ah"}, "score": {"1x2", "ou", "ah"}},
+    "rugbyleague": {"name": "Rugby league", "markets": {"1x2", "ou", "ah"}, "score": {"1x2", "ou", "ah"}},
+}
+
+
+def sport_allows(sport: str | None, market: str) -> bool:
+    return market in SPORTS.get(sport or "soccer", {"markets": set()})["markets"]
+
+
+def sport_name(sport: str | None) -> str:
+    return SPORTS.get(sport or "soccer", {"name": str(sport)})["name"]
+
+
+def orient(market: str, line: float | None, outcome: str, swapped: bool) -> tuple[float | None, str]:
+    """Re-express a quote when a feed lists the match the other way round (home/away swapped)."""
+    if not swapped or market == "ou":
+        return line, outcome
+    flipped = {"home": "away", "away": "home"}.get(outcome, outcome)
+    if market == "ah" and line is not None:
+        return -line, flipped
+    return line, flipped
 
 
 @dataclass
@@ -24,12 +60,13 @@ class Event:
     league: str | None = None
     sources: dict = field(default_factory=dict)  # provider -> provider event id
     meta: dict = field(default_factory=dict)     # provider extras, e.g. the-odds-api sport key
+    sport: str = "soccer"
 
 
 @dataclass
 class Quote:
     event: str              # canonical event id
-    market: str             # "1x2" | "ou" | "ah"
+    market: str             # "1x2" | "ml" | "ou" | "ah"
     line: float | None      # ou: goals line; ah: HOME handicap
     outcome: str            # home | draw | away | over | under
     book: str
@@ -148,8 +185,10 @@ def ou_result(total_goals: int, line: float, side: str) -> float:
 
 def settle(market: str, line: float | None, outcome: str, home_goals: int, away_goals: int) -> float:
     """Fraction of the stake won (+1, +0.5), pushed (0) or lost (-0.5, -1)."""
-    if market == "1x2":
+    if market in ("1x2", "ml"):
         res = "home" if home_goals > away_goals else "away" if away_goals > home_goals else "draw"
+        if market == "ml" and res == "draw":
+            return 0.0  # a tie in a two-way winner market is void (stake back)
         return 1.0 if res == outcome else -1.0
     if market == "ou":
         return ou_result(home_goals + away_goals, float(line), outcome)
@@ -256,7 +295,11 @@ _ALIASES = {
 
 
 def normalize(name: str) -> str:
-    s = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode().lower()
+    name = str(name)
+    if name.count(",") == 1:  # "Djokovic, Novak" -> "Novak Djokovic"
+        last, first = name.split(",")
+        name = f"{first.strip()} {last.strip()}"
+    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
     s = s.replace("&", " and ").replace("'", " ")
     s = re.sub(r"[^a-z0-9 ]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
@@ -274,14 +317,25 @@ def name_score(a: str, b: str) -> float:
     ta, tb = set(a.split()), set(b.split())
     short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
     contain = 0.9 if short and short <= long_ else 0.0
-    return max(SequenceMatcher(None, a, b).ratio(), contain)
+    # players: "N Djokovic" / "Djokovic N" vs "Novak Djokovic" (whichever side is abbreviated)
+    initials = 0.0
+    for x, y in ((ta, tb), (tb, ta)):
+        ws, wl = {t for t in x if len(t) > 1}, {t for t in y if len(t) > 1}
+        inits = {t for t in x if len(t) == 1}
+        if ws and inits and ws <= wl:
+            if not all(any(w.startswith(i) for w in wl - ws) for i in inits):
+                return 0.3  # same surname, different first name (A. Zverev is not Mischa Zverev)
+            initials = 0.88
+    return max(SequenceMatcher(None, a, b).ratio(), contain, initials)
 
 
 def match_event(home: str, away: str, kickoff: datetime, events, tol_hours: float = 3.0,
-                min_score: float = 0.72):
-    """Best event with the same teams kicking off within ``tol_hours``."""
+                min_score: float = 0.72, sport: str | None = None):
+    """Best event with the same teams kicking off within ``tol_hours`` (same sport if given)."""
     best, best_s = None, 0.0
     for ev in events:
+        if sport is not None and getattr(ev, "sport", "soccer") != sport:
+            continue
         if abs((ev.kickoff - kickoff).total_seconds()) > tol_hours * 3600:
             continue
         sh, sa = name_score(home, ev.home), name_score(away, ev.away)
@@ -298,30 +352,45 @@ class EventIndex:
     def __init__(self):
         self.events: dict[str, Event] = {}
         self._by_source: dict[tuple[str, str], str] = {}
+        self._swapped: dict[tuple[str, str], bool] = {}
 
     def add(self, provider: str, provider_id: str, home: str, away: str, kickoff: datetime,
-            league: str | None = None) -> Event:
-        cid = self._by_source.get((provider, provider_id))
+            league: str | None = None, sport: str = "soccer") -> Event:
+        return self.add_oriented(provider, provider_id, home, away, kickoff, league, sport)[0]
+
+    def add_oriented(self, provider: str, provider_id: str, home: str, away: str, kickoff: datetime,
+                     league: str | None = None, sport: str = "soccer") -> tuple[Event, bool]:
+        """The canonical event, and whether this feed lists it the other way round."""
+        key = (provider, provider_id)
+        cid = self._by_source.get(key)
         if cid:
             ev = self.events[cid]
             ev.kickoff = kickoff
-            return ev
-        ev = match_event(home, away, kickoff, self.events.values(), tol_hours=2.0, min_score=0.8)
+            return ev, self._swapped.get(key, False)
+        swapped = False
+        ev = match_event(home, away, kickoff, self.events.values(), tol_hours=2.0, min_score=0.8, sport=sport)
+        if ev is None:
+            ev = match_event(away, home, kickoff, self.events.values(), tol_hours=2.0, min_score=0.8, sport=sport)
+            swapped = ev is not None
         if ev is None:
             cid = f"{kickoff:%Y%m%d}-{normalize(home)}-{normalize(away)}".replace(" ", "_")
-            ev = Event(cid, home, away, kickoff, league)
+            if sport != "soccer":
+                cid = f"{sport}-{cid}"
+            ev = Event(cid, home, away, kickoff, league, sport=sport)
             self.events[cid] = ev
         ev.sources[provider] = provider_id
         if league and not ev.league:
             ev.league = league
-        self._by_source[(provider, provider_id)] = ev.id
-        return ev
+        self._by_source[key] = ev.id
+        self._swapped[key] = swapped
+        return ev, swapped
 
     def prune(self, before: datetime) -> None:
         for cid in [k for k, e in self.events.items() if e.kickoff < before]:
             ev = self.events.pop(cid)
             for prov, pid in ev.sources.items():
                 self._by_source.pop((prov, pid), None)
+                self._swapped.pop((prov, pid), None)
 
 
 def parse_time(s: str) -> datetime:

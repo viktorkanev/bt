@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from .core import OUTCOMES, EventIndex, Quote, ah_break_even, ah_ev, book_gross_needed, book_net_odds, devig, \
-    match_event, parse_time, within
+    match_event, parse_time, sport_allows, within
 
 
 @dataclass
@@ -34,6 +34,7 @@ class Alert:
     edge: float              # expected profit per unit stake (after commission)
     detail: str = ""
     extra: dict = field(default_factory=dict)
+    sport: str = "soccer"
 
     @property
     def key(self) -> str:
@@ -49,16 +50,18 @@ def selection_text(market: str, line: float | None, outcome: str, home: str = ""
     if outcome == "all":  # arbitrage: every outcome of the market
         if market == "1x2":
             return "Match result, all three outcomes"
+        if market == "ml":
+            return "Winner, both sides"
         if market == "ou":
             return f"Over/under {line:g}, both sides"
-        return f"Handicap {home} {line:+.2f}, both sides"
-    if market == "1x2":
+        return f"Handicap {home} {line:+g}, both sides"
+    if market in ("1x2", "ml"):
         return {"home": f"{home} to win", "away": f"{away} to win", "draw": "Draw"}[outcome]
     if market == "ou":
-        return f"{outcome.capitalize()} {line:g} goals"
+        return f"{outcome.capitalize()} {line:g}"
     team = home if outcome == "home" else away
     line = line if outcome == "home" else -line
-    return f"{team} {line:+.2f} (Asian handicap)"
+    return f"{team} {line:+g} (handicap)"
 
 
 def group_quotes(quotes: list[Quote]) -> dict[tuple, dict[str, dict[str, Quote]]]:
@@ -96,11 +99,11 @@ def value_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetim
     targets = list(targets if targets is not None else a.get("target_books", ["*"]))
     out: list[Alert] = []
     for (eid, market, line), books in group_quotes(quotes).items():
-        if market not in a.get("markets", ["1x2", "ou", "ah"]):
+        if market not in a.get("markets", ["1x2", "ml", "ou", "ah"]):
             continue
         ev = index.events.get(eid)
-        if ev is None or not within(ev.kickoff, now, a.get("min_minutes_before_kickoff", 2),
-                                    a.get("lookahead_hours", 48)):
+        if ev is None or not sport_allows(ev.sport, market) or not within(
+                ev.kickoff, now, a.get("min_minutes_before_kickoff", 2), a.get("lookahead_hours", 48)):
             continue
         outcomes = OUTCOMES[market]
         ref_book, fair = None, None
@@ -129,7 +132,7 @@ def value_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetim
                     out.append(Alert("value", eid, f"{ev.home} v {ev.away}", ev.kickoff, ev.league, market, line,
                                      o, book, q.price, 1 / p, edge,
                                      f"{ref_book} {ref_txt} (no-margin {1 / p:.2f})",
-                                     {"reference": ref_book}))
+                                     {"reference": ref_book}, ev.sport))
     return out
 
 
@@ -144,11 +147,11 @@ def arb_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetime)
     min_size = a.get("min_exchange_size", 0)
     out: list[Alert] = []
     for (eid, market, line), books in group_quotes(quotes).items():
-        if market not in a.get("markets", ["1x2", "ou", "ah"]):
+        if market not in a.get("markets", ["1x2", "ml", "ou", "ah"]):
             continue
         ev = index.events.get(eid)
-        if ev is None or not within(ev.kickoff, now, a.get("min_minutes_before_kickoff", 2),
-                                    a.get("lookahead_hours", 48)):
+        if ev is None or not sport_allows(ev.sport, market) or not within(
+                ev.kickoff, now, a.get("min_minutes_before_kickoff", 2), a.get("lookahead_hours", 48)):
             continue
         best: dict[str, tuple[float, Quote]] = {}
         for book, outs in books.items():
@@ -172,7 +175,7 @@ def arb_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetime)
         detail = " · ".join(f"{selection_text(market, line, lg['outcome'], ev.home, ev.away)} @ {lg['price']:.2f} "
                             f"{lg['book']} ({lg['share']:.0%})" for lg in legs)
         out.append(Alert("arb", eid, f"{ev.home} v {ev.away}", ev.kickoff, ev.league, market, line, "all",
-                         "multi", round(1 / inv, 4), 0.0, edge, detail, {"legs": legs}))
+                         "multi", round(1 / inv, 4), 0.0, edge, detail, {"legs": legs}, ev.sport))
     return out
 
 
@@ -193,7 +196,7 @@ def pick_alerts(picks: list[dict], index: EventIndex, quotes: list[Quote], cfg: 
         row = {"pick": pk, "matched": False, "best": None}
         if kickoff < now - timedelta(hours=2):
             continue
-        ev = match_event(pk["home"], pk["away"], kickoff, index.events.values())
+        ev = match_event(pk["home"], pk["away"], kickoff, index.events.values(), sport="soccer")
         if ev is None:
             status.append(row)
             continue

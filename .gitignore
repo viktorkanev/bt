@@ -12,3 +12,5 @@ watch.toml
 *.db
 /picks.json
 /odds.json
+oddspapi-cache.json
+oddspapi-samples/

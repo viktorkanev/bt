@@ -46,20 +46,39 @@ api_key = ""
 regions = "eu"            # "eu" includes pinnacle and betfair_ex_eu
 markets = ["h2h", "totals", "spreads"]
 bookmakers = []           # e.g. ["pinnacle", "betfair_ex_eu"] to limit the feed (cheaper)
+groups = []               # other sports, e.g. ["Baseball", "Tennis", "Rugby League"]: every active league
+                          # in those groups (see `python3 -m footy.watch sports`); each costs credits
 monthly_credits = 500     # your plan; polling is spaced so credits last the month
 min_interval_seconds = 600
 
 [betfair]                 # Betfair Exchange API: free delayed key (prices 1-180 s late)
 enabled = false
+sports = ["soccer"]       # add "tennis", "baseball", "basketball", "icehockey", "volleyball", "rugbyunion",
+                          # "rugbyleague", "americanfootball" (winner markets for those)
 app_key = ""
 username = ""
 password = ""
 interval_seconds = 30
 competitions = []         # Betfair competition ids; empty = all football in lookahead
 
+[oddspapi]                # https://oddspapi.io : 350+ bookmakers incl. Pinnacle, SBOBet, Singbet; any sport
+enabled = false
+api_key = ""              # or set FOOTY_ODDSPAPI_KEY; never commit it
+bookmakers = ["pinnacle", "singbet", "sbobet"]   # up to 3; check slugs with: python3 -m footy.watch oddspapi --bookmakers
+monthly_requests = 250    # free plan; raise it if you pay. Sweeps are spaced so this lasts the month
+[oddspapi.sports]         # sport = [tournament ids]; [] = the busiest tournaments in the next 36 hours
+soccer = []
+# baseball = []
+# basketball = []
+# icehockey = []
+# tennis = []
+# volleyball = []
+# rugbyunion = []
+# rugbyleague = []
+
 [polymarket]              # Polymarket football markets: public data, no key needed
 enabled = false           # check what's listed with: python3 -m footy.watch polymarket
-sports = []               # sport codes from that list; empty = every football league
+sports = []               # codes from that list, e.g. ["epl", "mlb", "nba", "nhl", "atp"]; empty = all football
 interval_seconds = 60
 
 [fees]                    # prediction-market taker fee: rate * p * (1 - p) per share at price p

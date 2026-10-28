@@ -8,7 +8,7 @@ import io
 import json
 from datetime import datetime
 
-from .core import utcnow
+from .core import sport_name, utcnow
 from .notify import book_name, local_time
 from .paper import VENUES, summarize, verdict
 from .rules import selection_text
@@ -196,12 +196,27 @@ def render_paper(w, base_css: str, venue: str = "best", strategy: str = "all") -
                         f"<td>{cs['open']}</td><td>{_money(cs['staked'], cur, False)}</td><td>{_pct(cs['avg_ev'])}</td>"
                         f"<td>{_pct(cs['beat_close'], 0).lstrip('+')}</td></tr>")
 
+    by_sport = []
+    sports_seen = sorted({b.get("sport") or "soccer" for b in bets})
+    if len(sports_seen) > 1:
+        for sp in sports_seen:
+            ss = summarize([b for b in bets if (b.get("sport") or "soccer") == sp], start)
+            by_sport.append(f"<tr><td class='l'>{e(sport_name(sp))}</td>"
+                            f"<td class='{_cls(ss['profit'])}'>{_money(ss['profit'], cur)}</td><td>{_pct(ss['roi'])}</td>"
+                            f"<td class='{_cls(ss['avg_clv'])}'>{_pct(ss['avg_clv'])}</td><td>{ss['settled']}</td>"
+                            f"<td>{ss['open']}</td><td>{_pct(ss['avg_ev'])}</td></tr>")
+    sport_table = ("" if not by_sport else
+                   f"<h2>By sport, {e(VENUES[venue])}</h2><div class='tablewrap'><table><thead><tr>"
+                   "<th class='l'>Sport</th><th>Profit</th><th>ROI</th><th>Avg CLV</th><th>Settled</th><th>Open</th>"
+                   f"<th>Avg EV</th></tr></thead><tbody>{''.join(by_sport)}</tbody></table></div>")
     open_rows, done_rows = [], []
     for b in sorted(bets, key=lambda x: x["kickoff"]):
         ko = local_time(datetime.fromisoformat(b["kickoff"]), tz)
         close = f"{b['close_fair']:.2f}" if b["close_fair"] else "–"
         how = " *" if b["close_how"] == "converted" else ""
-        row = (f"<td class='l'>{e(ko)}</td><td class='l'>{e(b['home'])} – {e(b['away'])}</td>"
+        sp = b.get("sport") or "soccer"
+        sp_txt = "" if sp == "soccer" else f"<div class='muted small'>{e(sport_name(sp))}</div>"
+        row = (f"<td class='l'>{e(ko)}</td><td class='l'>{e(b['home'])} – {e(b['away'])}{sp_txt}</td>"
                f"<td class='l'>{e(_sel(b))}<div class='muted small'>{e(b['strategy_name'])}</div></td>"
                f"<td>{e(_place(b))}</td><td>{_pct(b['ev'])}</td><td>{close}{how}</td>"
                f"<td class='{_cls(b['clv'])}'>{_pct(b['clv'])}</td>")
@@ -235,6 +250,7 @@ should follow the expected lines; the shaded band is the normal luck range (95%)
 <div class="tablewrap"><table><thead><tr><th class="l">Place</th><th class="l">Strategy</th><th>Profit</th><th>ROI</th>
 <th>Avg CLV</th><th>Settled</th><th>Open</th><th>Staked</th><th>Avg EV</th><th>Beat close</th></tr></thead>
 <tbody>{''.join(comp) or "<tr><td class='l muted' colspan='10'>No bets yet.</td></tr>"}</tbody></table></div>
+{sport_table}
 <h2>Open bets</h2>
 <div class="tablewrap"><table><thead><tr>{head}<th>Stake</th></tr></thead>
 <tbody>{''.join(open_rows) or "<tr><td class='l muted' colspan='8'>None right now.</td></tr>"}</tbody></table></div>

@@ -21,6 +21,7 @@ produces the picks and `footy push-picks` sends them to the Pi.
 |---|---|---|
 | [The Odds API](https://the-odds-api.com) | Pinnacle, Betfair Exchange and many other books in one call (region `eu`) | Free: 500 credits/month (enough to try it). Paid plans for real tracking |
 | [Betfair Exchange API](https://developer.betfair.com) | Exchange back/lay prices and liquidity | Free delayed key (prices 1-180 s late); live key is a one-off £299 |
+| [OddsPapi](https://oddspapi.io) | 350+ bookmakers in any sport, including Pinnacle and the Asian books BetInAsia offers (SBOBet, Singbet) | Free: 250 requests/month (a few sweeps a day). Paid plans for more |
 | [Polymarket](https://polymarket.com) | Football match winner, totals and spreads from the order book (best ask, best bid, money available) | Free, no key. Taker fee about 0.05 x p x (1-p) per share; limit (maker) orders pay none |
 | Your own script | Anything that writes `odds.json` (see the `file` provider) | - |
 
@@ -169,3 +170,50 @@ Things to know:
 Paper trading records each arbitrage in its own "Arbitrage" bankroll (default
 €100 split across the legs), so you can see how often they appear and what they
 would have made.
+
+## 8. More sports and OddsPapi
+
+Besides football the watcher handles baseball, basketball, ice hockey, tennis,
+volleyball, rugby union, rugby league and American football. "Wrong odds",
+arbitrage and paper trading work the same way: Pinnacle's (or Betfair's) price
+without its margin is the fair price, and anything clearly better is an alert.
+No historical data is needed for that.
+
+Only markets with the same rules everywhere are compared:
+
+| Sport | Markets compared |
+|---|---|
+| Football | match result (90 min), totals, Asian handicap |
+| Baseball, basketball, American football | winner (incl. extra innings / overtime), totals, handicap (run line / spread) |
+| Ice hockey | winner incl. overtime, regular-time result, totals, puck line |
+| Rugby union and league | match result, totals, handicap |
+| Tennis, volleyball | winner only (books mix games, sets and points in handicaps and totals) |
+
+Turn sports on per feed:
+
+* **OddsPapi**: add the sport under `[oddspapi.sports]`. An empty list follows the
+  busiest tournaments in the next 36 hours; put tournament ids there to choose.
+* **Betfair**: `sports = ["soccer", "tennis", "baseball", ...]` (winner markets).
+* **The Odds API**: `groups = ["Baseball", "Tennis", ...]` (costs credits per league).
+* **Polymarket**: `sports = ["mlb", "nba", "nhl", "atp", ...]` (codes from `python3 -m footy.watch polymarket`).
+
+**OddsPapi on the free plan (250 requests a month).** One request returns every
+match in up to 10 tournaments for up to 3 bookmakers, and the sport list, market
+list and fixture list are kept on disk (`oddspapi-cache.json`). The watcher counts
+requests and spaces sweeps so they last the month. Each sport costs one fixture
+request a day plus one odds request per sweep, so on the free plan one sport gets a
+sweep about every 3-4 hours and two sports about every 8 hours. Fine for paper
+trading the idea; live alerts need a paid plan (set `monthly_requests` to it).
+
+Check it once installed (uses about 4 requests the first time, 1 after):
+
+```bash
+python3 -m footy.watch oddspapi --sport soccer --bookmakers
+python3 -m footy.watch oddspapi --sport baseball --save oddspapi-samples
+```
+
+If prices don't show up, send the files in `oddspapi-samples/` (they contain no key).
+
+Results for paper bets: The Odds API scores and football-data settle by final
+score; the Betfair feed settles winner markets in any sport from Betfair's own
+result. Tennis and volleyball bets need the Betfair feed for that.

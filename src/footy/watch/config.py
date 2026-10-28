@@ -2,7 +2,7 @@
 
 Secrets can come from environment variables instead of the file:
 FOOTY_ODDSAPI_KEY, FOOTY_BETFAIR_APP_KEY, FOOTY_BETFAIR_USERNAME, FOOTY_BETFAIR_PASSWORD,
-FOOTY_TELEGRAM_TOKEN, FOOTY_TELEGRAM_CHAT_ID, FOOTY_NTFY_TOPIC, FOOTY_WATCH_TOKEN.
+FOOTY_TELEGRAM_TOKEN, FOOTY_TELEGRAM_CHAT_ID, FOOTY_NTFY_TOPIC, FOOTY_WATCH_TOKEN, FOOTY_ODDSPAPI_KEY.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ DEFAULTS: dict = {
     "server": {"host": "0.0.0.0", "port": 8080, "token": "", "db": "footy-watch.db",
                "picks_file": "picks.json", "timezone": "Europe/London", "loop_seconds": 5},
     "alerts": {
-        "markets": ["1x2", "ou", "ah"],
+        "markets": ["1x2", "ml", "ou", "ah"],
         "reference_books": ["pinnacle", "betfair_ex_eu", "betfair"],
         "target_books": ["*"],          # books you can bet at; "*" = every non-reference book
         "pick_books": ["*"],
@@ -48,9 +48,19 @@ DEFAULTS: dict = {
                    "betfair": 0.05, "matchbook": 0.02, "smarkets": 0.02},
     "oddsapi": {"enabled": False, "api_key": "", "regions": "eu", "markets": ["h2h", "totals", "spreads"],
                 "bookmakers": [], "monthly_credits": 500, "min_interval_seconds": 600,
-                "lookahead_hours": 36, "events_refresh_minutes": 60, "sports": ODDSAPI_SPORTS},
-    "betfair": {"enabled": False, "app_key": "", "username": "", "password": "", "interval_seconds": 30,
+                "lookahead_hours": 36, "events_refresh_minutes": 60, "sports": ODDSAPI_SPORTS,
+                "groups": []},   # e.g. ["Baseball", "Tennis"]: every active league in those groups (costs credits)
+    "betfair": {"enabled": False, "sports": ["soccer"], "app_key": "", "username": "", "password": "",
+                "interval_seconds": 30,
                 "lookahead_hours": 36, "competitions": [], "catalogue_refresh_minutes": 15},
+    "oddspapi": {"enabled": False, "api_key": "",
+                 # sport -> tournament ids; an empty list = the busiest tournaments in the next lookahead_hours
+                 "sports": {"soccer": []},
+                 "bookmakers": ["pinnacle", "singbet", "sbobet"],   # up to 3 per request
+                 "book_names": {"betfair-ex": "betfair"},
+                 "monthly_requests": 250, "min_interval_seconds": 1800, "lookahead_hours": 36,
+                 "fixtures_refresh_hours": 24, "max_tournaments": 20, "tournaments_per_request": 10,
+                 "cache_file": "oddspapi-cache.json"},
     "polymarket": {"enabled": False, "sports": [], "series_ids": [], "soccer_tag": "100350",
                    "markets": ["moneyline", "totals", "spreads"], "interval_seconds": 60,
                    "lookahead_hours": 36, "catalogue_refresh_minutes": 15},
@@ -82,6 +92,7 @@ ENV = {
     ("betfair", "username"): "FOOTY_BETFAIR_USERNAME", ("betfair", "password"): "FOOTY_BETFAIR_PASSWORD",
     ("notify", "telegram_token"): "FOOTY_TELEGRAM_TOKEN", ("notify", "telegram_chat_id"): "FOOTY_TELEGRAM_CHAT_ID",
     ("notify", "ntfy_topic"): "FOOTY_NTFY_TOPIC", ("server", "token"): "FOOTY_WATCH_TOKEN",
+    ("oddspapi", "api_key"): "FOOTY_ODDSPAPI_KEY",
 }
 
 
@@ -115,4 +126,6 @@ def load(path: str | None) -> dict:
             cfg["server"][key] = str(base / cfg["server"][key])
     if cfg["file"].get("path") and not Path(cfg["file"]["path"]).is_absolute():
         cfg["file"]["path"] = str(base / cfg["file"]["path"])
+    if not Path(cfg["oddspapi"]["cache_file"]).is_absolute():
+        cfg["oddspapi"]["cache_file"] = str(base / cfg["oddspapi"]["cache_file"])
     return cfg

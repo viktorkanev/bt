@@ -121,8 +121,11 @@ Two kinds of alert:
   handicaps), re-priced against the live odds, at any handicap line on offer.
 
 Feeds: The Odds API (Pinnacle, Betfair Exchange and others; free tier 500
-credits a month), the Betfair Exchange API (free delayed key) and Polymarket
-(free, no key; its taker fee is included). There is also a file feed for testing.
+credits a month), OddsPapi (350+ bookmakers including Pinnacle, SBOBet and
+Singbet; free tier 250 requests a month), the Betfair Exchange API (free delayed
+key) and Polymarket (free, no key; its taker fee is included). There is also a
+file feed for testing. Besides football it covers baseball, basketball, ice
+hockey, tennis, volleyball, rugby and American football.
 
 A third alert type, **arbitrage**, fires when backing every outcome of a market at
 the best prices across all books returns more than the stake, whatever the result.
