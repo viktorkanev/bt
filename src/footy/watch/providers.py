@@ -57,6 +57,8 @@ class OddsAPIProvider:
         self._events: dict[str, list[dict]] = {}
         self._events_at = 0.0
         self.bad_sports: set[str] = set()
+        self.scores_refresh_s = float(cfg.get("scores_refresh_minutes", 180)) * 60
+        self._scores: dict[str, tuple[float, list[dict]]] = {}
         self.last_error = ""
 
     def _url(self, path: str, **params) -> str:
@@ -142,15 +144,62 @@ class OddsAPIProvider:
                 self.last_error = f"odds {sport}: {e}"
                 log.warning(self.last_error)
                 continue
-            quotes += self.parse(data or [], index, self.sports.get(sport))
+            quotes += self.parse(data or [], index, self.sports.get(sport), sport)
         return quotes
 
+    def event_odds(self, index: EventIndex, sport: str, event_id: str) -> list[Quote]:
+        """One match's prices (closing-line snapshot for paper bets). Same credit cost per market."""
+        data, h = http_json(self._url(
+            f"/sports/{sport}/events/{event_id}/odds", regions=None if self.bookmakers else self.regions,
+            bookmakers=",".join(self.bookmakers), markets=",".join(self.markets),
+            oddsFormat="decimal", dateFormat="iso"))
+        self._track(h)
+        return self.parse([data] if isinstance(data, dict) else (data or []), index, self.sports.get(sport), sport)
+
+    def results(self, bets: list[dict], now: datetime) -> list[dict]:
+        """Final scores for paper bets (scores endpoint, 2 credits per league per call)."""
+        recent = [b for b in bets if now - parse_time(b["kickoff"]) < timedelta(days=3)]  # the API's limit
+        sports = {b["meta"].get("oddsapi_sport") for b in recent if b.get("meta", {}).get("oddsapi_sport")}
+        out = []
+        for sport in sorted(sports):
+            cached = self._scores.get(sport)
+            if cached is None or time.time() - cached[0] > self.scores_refresh_s:
+                try:
+                    data, h = http_json(self._url(f"/sports/{sport}/scores", daysFrom=3, dateFormat="iso"))
+                    self._track(h)
+                    cached = (time.time(), self.parse_scores(data or []))
+                    self._scores[sport] = cached
+                except Exception as e:  # noqa: BLE001
+                    self.last_error = f"scores {sport}: {e}"
+                    log.warning(self.last_error)
+                    continue
+            out += cached[1]
+        return out
+
+    @staticmethod
+    def parse_scores(data: list[dict]) -> list[dict]:
+        out = []
+        for e in data:
+            if not e.get("completed") or not e.get("scores"):
+                continue
+            sc = {s["name"]: s["score"] for s in e["scores"]}
+            try:
+                hg, ag = int(sc[e["home_team"]]), int(sc[e["away_team"]])
+            except (KeyError, TypeError, ValueError):
+                continue
+            out.append({"source": "the-odds-api", "id": e.get("id"), "home": e["home_team"], "away": e["away_team"],
+                        "kickoff": parse_time(e["commence_time"]), "home_goals": hg, "away_goals": ag})
+        return out
+
     @classmethod
-    def parse(cls, data: list[dict], index: EventIndex, league: str | None = None) -> list[Quote]:
+    def parse(cls, data: list[dict], index: EventIndex, league: str | None = None,
+              sport: str | None = None) -> list[Quote]:
         out: list[Quote] = []
         for e in data:
             home, away = e["home_team"], e["away_team"]
             ev = index.add(cls.name, e["id"], home, away, parse_time(e["commence_time"]), league)
+            if sport:
+                ev.meta["oddsapi_sport"] = sport
             for bk in e.get("bookmakers", []):
                 book = bk["key"]
                 for mk in bk.get("markets", []):
@@ -297,7 +346,7 @@ class BetfairProvider:
 
 # --------------------------------------------------------------------- file
 class FileProvider:
-    """Reads ``{"events": [...], "quotes": [...]}`` from a JSON file each poll.
+    """Reads ``{"events": [...], "quotes": [...], "results": [...]}`` from a JSON file each poll.
 
     events: {id, home, away, kickoff (ISO), league?}
     quotes: {event, market, line, outcome, book, price, updated?, lay?, size?}
@@ -327,6 +376,17 @@ class FileProvider:
                              float(q["price"]), parse_time(q["updated"]) if q.get("updated") else utcnow(),
                              q.get("lay"), q.get("size")))
         return out
+
+    def results(self, bets: list[dict], now: datetime) -> list[dict]:
+        """Optional ``"results": [{home, away, kickoff, home_goals, away_goals}]`` in the same file."""
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return []
+        return [{"source": "file", "home": r["home"], "away": r["away"], "kickoff": parse_time(r["kickoff"]),
+                 "home_goals": int(r["home_goals"]), "away_goals": int(r["away_goals"])}
+                for r in data.get("results", [])]
 
 
 PROVIDERS = {"oddsapi": OddsAPIProvider, "betfair": BetfairProvider, "file": FileProvider}

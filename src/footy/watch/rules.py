@@ -40,13 +40,17 @@ class Alert:
         return f"{self.kind}|{self.event_id}|{self.market}|{self.line}|{self.outcome}|{self.book}"
 
     def selection(self, home: str = "", away: str = "") -> str:
-        if self.market == "1x2":
-            return {"home": f"{home} to win", "away": f"{away} to win", "draw": "Draw"}[self.outcome]
-        if self.market == "ou":
-            return f"{self.outcome.capitalize()} {self.line:g} goals"
-        team = home if self.outcome == "home" else away
-        line = self.line if self.outcome == "home" else -self.line
-        return f"{team} {line:+.2f} (Asian handicap)"
+        return selection_text(self.market, self.line, self.outcome, home, away)
+
+
+def selection_text(market: str, line: float | None, outcome: str, home: str = "", away: str = "") -> str:
+    if market == "1x2":
+        return {"home": f"{home} to win", "away": f"{away} to win", "draw": "Draw"}[outcome]
+    if market == "ou":
+        return f"{outcome.capitalize()} {line:g} goals"
+    team = home if outcome == "home" else away
+    line = line if outcome == "home" else -line
+    return f"{team} {line:+.2f} (Asian handicap)"
 
 
 def group_quotes(quotes: list[Quote]) -> dict[tuple, dict[str, dict[str, Quote]]]:
@@ -61,7 +65,7 @@ def _fresh(q: Quote, now: datetime, max_age_min: float) -> bool:
     return q.updated is None or (now - q.updated) <= timedelta(minutes=max_age_min)
 
 
-def _ref_probs(outs: dict[str, Quote], outcomes: tuple, max_spread: float) -> list[float] | None:
+def ref_probs(outs: dict[str, Quote], outcomes: tuple, max_spread: float) -> list[float] | None:
     if not all(o in outs for o in outcomes):
         return None
     implied = []
@@ -76,11 +80,13 @@ def _ref_probs(outs: dict[str, Quote], outcomes: tuple, max_spread: float) -> li
     return devig(implied, "power")
 
 
-def value_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetime) -> list[Alert]:
+def value_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetime,
+                 targets: list[str] | None = None) -> list[Alert]:
+    """``targets`` overrides the configured target books (paper trading looks at every book)."""
     a = cfg["alerts"]
     commission = cfg.get("commission", {})
     refs = list(a.get("reference_books", ["pinnacle"]))
-    targets = list(a.get("target_books", ["*"]))
+    targets = list(targets if targets is not None else a.get("target_books", ["*"]))
     out: list[Alert] = []
     for (eid, market, line), books in group_quotes(quotes).items():
         if market not in a.get("markets", ["1x2", "ou", "ah"]):
@@ -95,7 +101,7 @@ def value_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetim
             outs = books.get(rb)
             if not outs or not all(_fresh(q, now, a.get("max_quote_age_minutes", 30)) for q in outs.values()):
                 continue
-            fair = _ref_probs(outs, outcomes, a.get("max_exchange_spread", 0.05))
+            fair = ref_probs(outs, outcomes, a.get("max_exchange_spread", 0.05))
             if fair:
                 ref_book = rb
                 break
@@ -121,10 +127,14 @@ def value_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetim
 
 
 def pick_alerts(picks: list[dict], index: EventIndex, quotes: list[Quote], cfg: dict,
-                now: datetime) -> tuple[list[Alert], list[dict]]:
-    """Alerts for research picks, plus a live status row per pick for the web page."""
+                now: datetime, books: list[str] | None = None) -> tuple[list[Alert], list[dict]]:
+    """Alerts for research picks, plus a live status row per pick for the web page.
+
+    ``books`` overrides the configured pick books (paper trading looks at every book).
+    """
+    a = cfg["alerts"]
     commission = cfg.get("commission", {})
-    pick_books = cfg["alerts"].get("pick_books", ["*"])
+    pick_books = list(books if books is not None else a.get("pick_books", ["*"]))
     by_event: dict[str, list[Quote]] = defaultdict(list)
     for q in quotes:
         by_event[q.event].append(q)
@@ -140,8 +150,11 @@ def pick_alerts(picks: list[dict], index: EventIndex, quotes: list[Quote], cfg: 
             continue
         row["matched"] = True
         best = None
+        open_for_bets = within(ev.kickoff, now, a.get("min_minutes_before_kickoff", 2), a.get("lookahead_hours", 48))
         for q in by_event.get(ev.id, []):
             if q.market != pk["market"] or q.outcome != pk["side"]:
+                continue
+            if not _fresh(q, now, a.get("max_quote_age_minutes", 30)):
                 continue
             if pick_books != ["*"] and q.book not in pick_books:
                 continue
@@ -161,10 +174,12 @@ def pick_alerts(picks: list[dict], index: EventIndex, quotes: list[Quote], cfg: 
             cand = {"book": q.book, "price": q.price, "line": q.line, "edge": edge, "need": need}
             if best is None or edge > best["edge"]:
                 best = cand
-            if edge >= float(pk.get("min_edge", 0.0)) + float(cfg["alerts"].get("pick_extra_edge", 0.0)):
+            if open_for_bets and edge >= float(pk.get("min_edge", 0.0)) + float(a.get("pick_extra_edge", 0.0)):
                 alerts.append(Alert("pick", ev.id, f"{ev.home} v {ev.away}", ev.kickoff, ev.league,
                                     q.market, q.line, q.outcome, q.book, q.price, need, edge,
                                     pk.get("reason", ""), {"rule": pk.get("rule_name", pk.get("rule", "")),
+                                                           "rule_code": pk.get("rule", ""),
+                                                           "league": pk.get("league"),
                                                            "pick_line": pk.get("line")}))
         row["best"] = best
         status.append(row)

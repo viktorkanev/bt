@@ -1,4 +1,4 @@
-"""python -m footy.watch {run,check,sports,notify-test,init-config,push}"""
+"""python -m footy.watch {run,check,sports,notify-test,init-config,push,paper,paper-reset}"""
 
 from __future__ import annotations
 
@@ -20,9 +20,13 @@ def main(argv: list[str] | None = None) -> int:
     for name, hlp in (("run", "poll, alert and serve the status page"),
                       ("check", "poll every provider once and print what it found (no notifications)"),
                       ("sports", "list the-odds-api soccer sport keys available to your key"),
-                      ("notify-test", "send a test notification")):
+                      ("notify-test", "send a test notification"),
+                      ("paper", "paper-trading results by place and strategy"),
+                      ("paper-reset", "delete all paper bets and start the imaginary bankrolls again")):
         p = sub.add_parser(name, help=hlp)
         p.add_argument("--config", default="watch.toml")
+        if name == "paper-reset":
+            p.add_argument("--yes", action="store_true", help="really delete")
     p = sub.add_parser("init-config", help="write an example watch.toml")
     p.add_argument("path", nargs="?", default="watch.toml")
     p = sub.add_parser("push", help="send picks.json (from `footy upcoming`) to a running watcher")
@@ -57,6 +61,29 @@ def main(argv: list[str] | None = None) -> int:
             mapped = cfg["oddsapi"]["sports"].get(s["key"], "")
             print(f"{s['key']:<45} {s.get('title', ''):<35} {'active' if s.get('active') else '':<7} {mapped}")
         print(f"credits remaining: {prov.remaining}")
+        return 0
+    if args.cmd in ("paper", "paper-reset"):
+        from .paper import VENUES, PaperBook, summarize
+        book = PaperBook(cfg["server"]["db"], cfg)
+        if args.cmd == "paper-reset":
+            if not args.yes:
+                print("this deletes every paper bet; run again with --yes")
+                return 1
+            print(f"deleted {book.reset()} paper bets")
+            return 0
+        start, cur = float(cfg["paper"]["bankroll"]), cfg["paper"].get("currency", "")
+        fmt = lambda x, pct=False: "-" if x is None else (f"{x:+.1%}" if pct else f"{x:+,.2f}")  # noqa: E731
+        print(f"{'place':<18}{'strategy':<26}{'settled':>8}{'open':>6}{'profit':>11}{'ROI':>8}"
+              f"{'avg EV':>8}{'avg CLV':>9}{'bankroll':>11}")
+        for v in cfg["paper"].get("venues", list(VENUES)):
+            for code, name in [("all", "All")] + book.strategies():
+                s = summarize(book.bets(venue=v, strategy=code), start)
+                if s["bets"] == 0 and code != "all":
+                    continue
+                bank = f"{cur}{s['bankroll']:,.2f}" if code == "all" else ""
+                print(f"{VENUES.get(v, v) if code == 'all' else '':<18}{name[:25]:<26}{s['settled']:>8}{s['open']:>6}"
+                      f"{fmt(s['profit']):>11}{fmt(s['roi'], True):>8}{fmt(s['avg_ev'], True):>8}"
+                      f"{fmt(s['avg_clv'], True):>9}{bank:>11}")
         return 0
     if args.cmd == "notify-test":
         from .notify import Notifier

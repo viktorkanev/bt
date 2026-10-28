@@ -50,6 +50,22 @@ DEFAULTS: dict = {
     "file": {"enabled": False, "path": "odds.json", "interval_seconds": 30},
     "notify": {"console": True, "telegram_token": "", "telegram_chat_id": "", "ntfy_topic": "",
                "ntfy_server": "https://ntfy.sh"},
+    "paper": {
+        "enabled": True,
+        "bankroll": 1000.0, "currency": "€",
+        "staking": "flat",              # "flat" or "kelly"
+        "flat_stake": 10.0,
+        "kelly_fraction": 0.25, "max_stake_pct": 0.03,
+        "venues": ["best", "pinnacle", "betfair"],
+        "strategies": ["*"],            # "*", or a list like ["value", "F1", "F2"]
+        "best_books": ["*"],            # books counted for "best price" (e.g. only ones you can use)
+        "pinnacle_books": ["pinnacle"],
+        "betfair_books": ["betfair_ex_eu", "betfair_ex_uk", "betfair"],
+        "min_minutes_before_kickoff": 5,
+        "closing_snapshot_minutes": 10,  # the-odds-api: one extra call per match just before kickoff
+        "settle_after_minutes": 135, "settle_every_minutes": 60, "void_after_days": 7,
+        "football_data_results": True,
+    },
 }
 
 ENV = {

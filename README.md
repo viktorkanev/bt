@@ -124,11 +124,18 @@ Feeds: The Odds API (Pinnacle, Betfair Exchange and others; free tier 500
 credits a month) and the Betfair Exchange API (free delayed key). There is also
 a file feed for testing.
 
+**Paper trading** (`/paper`): every alert also becomes an imaginary bet, recorded
+at the best price, at Pinnacle and at the Betfair Exchange, each with its own
+bankroll. It tracks EV when bet, closing-line value and results, and charts
+actual against expected profit, so you can see whether the alerts make money
+before staking anything.
+
 ```bash
 python -m footy.watch init-config       # writes watch.toml; add keys there (never committed)
 python -m footy.watch sports            # check the feed and list leagues
 python -m footy.watch notify-test       # check Telegram / ntfy
-python -m footy.watch run               # web page on http://<pi>:8080
+python -m footy.watch run               # web page on http://<pi>:8080 (paper trading on /paper)
+python -m footy.watch paper             # paper-trading results in the terminal
 footy upcoming && footy push-picks http://raspberrypi.local:8080 --token <token>   # from your PC
 ```
 

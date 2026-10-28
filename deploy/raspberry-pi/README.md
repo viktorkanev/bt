@@ -11,7 +11,8 @@ produces the picks and `footy push-picks` sends them to the Pi.
  footy upcoming  ── picks.json ──push──▶    footy.watch  ◀── odds feeds (The Odds API / Betfair)
                                                  │
                                                  ├──▶ Telegram / ntfy notification on your phone
-                                                 └──▶ http://raspberrypi.local:8080 status page
+                                                 ├──▶ http://raspberrypi.local:8080 status page
+                                                 └──▶ http://raspberrypi.local:8080/paper paper trading
 ```
 
 ## 1. Odds feeds
@@ -84,3 +85,45 @@ expected profit per unit stake at the alerted price after commission. Prices mov
 fast; check the price before betting and keep stakes small until the alerts have
 a track record. Big "edges" are often stale prices or feed errors, which is why
 `max_edge` filters them out.
+
+## 6. Paper trading (forward test with an imaginary bankroll)
+
+Every alert also becomes an imaginary bet, so you can see whether the alerts make
+money before risking any. Each bet is recorded at three places, each with its own
+bankroll (default €1,000 and €10 flat stakes; Kelly staking is an option):
+
+| Place | Price used |
+|---|---|
+| Best price | the best price among `best_books` (all books by default; limit it to the ones you can use) |
+| Pinnacle | Pinnacle's own price |
+| Betfair Exchange | the back price, after 5% commission |
+
+A place only gets a bet when its own price clears the alert's minimum edge, so
+the three bankrolls answer "would this work if I could only bet there?". For
+"wrong odds" alerts Pinnacle is usually the reference, so the Pinnacle bankroll
+mostly holds research picks.
+
+For each bet the watcher keeps:
+
+* **EV when bet**: the expected profit at the moment it was placed.
+* **CLV (closing-line value)**: our price against the margin-free closing price of
+  Pinnacle (else Betfair), captured just before kickoff. If the reference closed on
+  a different handicap or total, its price is moved to our line with a goals model
+  (marked `*`). On a small Odds API plan the watcher makes one extra request per
+  match about 10 minutes before kickoff (3 credits) to get the closing price.
+* **Result and profit**: from the-odds-api scores (2 credits per league, only
+  while bets are waiting), else football-data.co.uk (free, updated a few times a
+  week). A bet with no result after 7 days is voided.
+
+Open `http://raspberrypi.local:8080/paper`, or run `python3 -m footy.watch paper`
+over SSH. The chart shows actual profit against the profit the EV and the closing
+line predicted, with a shaded luck range. How to read it:
+
+* Profit alone needs many hundreds of bets before it means anything; the luck
+  range shows how far it can swing by chance.
+* CLV is the early signal. Beating the closing line on average over 100+ bets is
+  the best evidence of a real edge; consistently losing to it means the prices
+  taken were not really value, whatever the profit says so far.
+
+`/api/paper.csv` downloads every bet. `python3 -m footy.watch paper-reset --yes`
+starts the bankrolls again.

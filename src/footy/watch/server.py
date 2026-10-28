@@ -14,9 +14,12 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from urllib.parse import parse_qs, urlsplit
+
 from . import providers as P
-from .core import EventIndex, Quote, utcnow
+from .core import EventIndex, Quote, parse_time, utcnow
 from .notify import Notifier, book_name, format_alert, local_time
+from .paper import VENUES, FootballDataResults, PaperBook, summarize
 from .rules import Alert, pick_alerts, value_alerts
 from .state import State
 
@@ -38,6 +41,13 @@ class Watcher:
         self.errors: dict[str, str] = {}
         self.started = utcnow()
         self.lock = threading.Lock()
+        pp = cfg.get("paper", {})
+        self.paper = PaperBook(cfg["server"]["db"], cfg) if pp.get("enabled") else None
+        self.result_sources = [p for p in self.providers if hasattr(p, "results")]
+        if self.paper and pp.get("football_data_results", True):
+            self.result_sources.append(FootballDataResults())
+        self.next_settle = 0.0
+        self._snapped: set[str] = set()
         self.load_picks()
 
     # ---------------------------------------------------------- picks
@@ -79,9 +89,47 @@ class Watcher:
                 log.warning("%s poll failed: %s", prov.name, e)
             n_active = len(prov.active_sports(now)) if hasattr(prov, "active_sports") else 0
             self.next_poll[prov.name] = time.time() + prov.interval(n_active, now)
+        if self.paper:
+            polled = self._closing_snapshots(now) or polled
+            if time.time() >= self.next_settle:
+                try:
+                    self.paper.settle(now, self.result_sources)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("paper settlement failed: %s", e)
+                self.next_settle = time.time() + 60 * float(self.cfg["paper"].get("settle_every_minutes", 60))
         if not polled:
             return []
         return self.evaluate(now)
+
+    def _closing_snapshots(self, now) -> bool:
+        """the-odds-api polls can be hours apart on a small plan, so fetch each paper bet's
+        match once just before kickoff to get a proper closing line."""
+        mins = float(self.cfg["paper"].get("closing_snapshot_minutes", 10))
+        feed = next((p for p in self.providers if hasattr(p, "event_odds")), None)
+        if mins <= 0 or feed is None:
+            return False
+        last = self.last_poll.get(feed.name)
+        recent = last is not None and (now - datetime.fromisoformat(last)) < timedelta(minutes=mins)
+        took = False
+        for b in self.paper.open_bets(before_kickoff_of=now):
+            if parse_time(b["kickoff"]) - now > timedelta(minutes=mins):
+                continue
+            oid, sport = b["meta"].get("sources", {}).get(feed.name), b["meta"].get("oddsapi_sport")
+            if not oid or not sport or oid in self._snapped:
+                continue
+            self._snapped.add(oid)
+            if recent:
+                continue  # the regular poll was close enough to kickoff
+            try:
+                fresh = feed.event_odds(self.index, sport, oid)
+                with self.lock:
+                    for q in fresh:
+                        self.quotes[(q.event, q.market, q.line, q.book, q.outcome)] = q
+                took = True
+                log.info("closing snapshot %s v %s: %d prices", b["home"], b["away"], len(fresh))
+            except Exception as e:  # noqa: BLE001
+                log.warning("closing snapshot failed for %s v %s: %s", b["home"], b["away"], e)
+        return took
 
     def evaluate(self, now) -> list[Alert]:
         a = self.cfg["alerts"]
@@ -98,6 +146,16 @@ class Watcher:
         if a.get("pick_alerts", True) and self.picks:
             pa, self.pick_status = pick_alerts(self.picks, self.index, quotes, self.cfg, now)
             alerts += pa
+        if self.paper:
+            try:  # paper trading looks at every book, whatever the notification filters say
+                pal = value_alerts(self.index, quotes, self.cfg, now, targets=["*"]) \
+                    if self.paper.strategy_enabled("value") else []
+                if self.picks:
+                    pal += pick_alerts(self.picks, self.index, quotes, self.cfg, now, books=["*"])[0]
+                self.paper.place(pal, self.index, now)
+                self.paper.update_closing(self.index, quotes, now)
+            except Exception as e:  # noqa: BLE001
+                log.exception("paper trading step failed: %s", e)
         sent = []
         tz = self.cfg["server"].get("timezone", "UTC")
         for al in sorted(alerts, key=lambda x: -x.edge):
@@ -128,10 +186,17 @@ class Watcher:
                           "next_poll_in_s": max(0, int(self.next_poll.get(p.name, 0) - time.time())),
                           "error": self.errors.get(p.name, ""),
                           "credits_remaining": getattr(p, "remaining", None)})
+        paper = {}
+        if self.paper:
+            start = float(self.cfg["paper"]["bankroll"])
+            for v in self.cfg["paper"].get("venues", list(VENUES)):
+                s = summarize(self.paper.bets(venue=v), start)
+                paper[v] = {k: s[k] for k in ("bets", "settled", "open", "profit", "roi", "avg_ev", "avg_clv",
+                                              "bankroll")}
         return {"now": now.isoformat(timespec="seconds"), "started": self.started.isoformat(timespec="seconds"),
                 "providers": provs, "events": len(self.index.events), "quotes": len(self.quotes),
                 "picks": len(self.picks), "alerts_sent": self.notifier.sent,
-                "notify_error": self.notifier.last_error}
+                "notify_error": self.notifier.last_error, "paper": paper}
 
 
 # ------------------------------------------------------------------- web
@@ -151,6 +216,7 @@ th,td{padding:8px 10px;text-align:right;white-space:nowrap;border-bottom:1px sol
 th{font-size:12px;color:var(--muted);background:var(--surface-2);font-weight:600}th.l,td.l{text-align:left}
 tbody tr:last-child td{border-bottom:0}.pill{border-radius:999px;padding:2px 9px;font-weight:600;font-size:12.5px}
 .ok{color:var(--good);background:var(--good-bg)}.wait{color:var(--wait);background:var(--wait-bg)}
+.paperlink{display:block;text-decoration:none;color:var(--ink)}
 """
 
 
@@ -173,6 +239,16 @@ def render(w: Watcher) -> str:
                  f"<b>{st['picks']}</b> picks · <b>{st['alerts_sent']}</b> alerts sent</div>")
     if st["notify_error"]:
         chips.append(f"<div class='chip err'>Notification error: {e(st['notify_error'])}</div>")
+    paper_html = ""
+    if st.get("paper"):
+        cur = w.cfg["paper"].get("currency", "€")
+        parts = []
+        for v, ps in st["paper"].items():
+            pl = ps["profit"]
+            parts.append(f"{e(VENUES.get(v, v))} <b>{'+' if pl >= 0 else '−'}{e(cur)}{abs(pl):,.2f}</b>"
+                         f" <span class='muted'>({ps['bets']} bets)</span>")
+        paper_html = (f"<a class='chip paperlink' href='/paper'><b>Paper trading →</b><br>"
+                      f"<span class='small'>{' · '.join(parts)}</span></a>")
     prow = []
     for row in w.pick_status:
         pk, b = row["pick"], row["best"]
@@ -206,6 +282,7 @@ def render(w: Watcher) -> str:
 <title>Odds Watch</title><style>{CSS}</style></head><body><div class="wrap">
 <h1>Odds watch</h1><div class="muted small">Updated {e(local_time(utcnow(), tz))} · page refreshes every 30 s</div>
 <div class="chips">{''.join(chips)}</div>
+{paper_html}
 <h2>Research picks, live</h2>
 <div class="tablewrap"><table><thead><tr><th class="l">Match</th><th class="l">Pick</th><th>Best live price</th><th>Status</th></tr></thead>
 <tbody>{''.join(prow) or "<tr><td class='l muted' colspan='4'>No picks loaded. Run footy upcoming, then footy push-picks on your PC.</td></tr>"}</tbody></table></div>
@@ -230,13 +307,25 @@ def make_handler(w: Watcher):
             self.wfile.write(data)
 
         def do_GET(self):  # noqa: N802
-            if self.path in ("/", "/index.html"):
+            url = urlsplit(self.path)
+            path, qs = url.path, parse_qs(url.query)
+            if path in ("/", "/index.html"):
                 self._send(200, render(w), "text/html")
-            elif self.path == "/api/status":
+            elif path == "/paper" and w.paper:
+                from .paper_web import render_paper
+                self._send(200, render_paper(w, CSS, qs.get("venue", ["best"])[0], qs.get("strategy", ["all"])[0]),
+                           "text/html")
+            elif path == "/api/paper" and w.paper:
+                from .paper_web import paper_json
+                self._send(200, json.dumps(paper_json(w), default=str))
+            elif path == "/api/paper.csv" and w.paper:
+                from .paper_web import paper_csv
+                self._send(200, paper_csv(w), "text/csv")
+            elif path == "/api/status":
                 self._send(200, json.dumps({**w.status(), "pick_status": w.pick_status}, default=str))
-            elif self.path == "/api/alerts":
+            elif path == "/api/alerts":
                 self._send(200, json.dumps(w.state.recent(utcnow() - timedelta(hours=48)), default=str))
-            elif self.path == "/health":
+            elif path == "/health":
                 self._send(200, '{"ok": true}')
             else:
                 self._send(404, '{"error": "not found"}')

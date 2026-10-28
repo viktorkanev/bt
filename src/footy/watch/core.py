@@ -5,6 +5,7 @@ Standard library only, so it runs on a Raspberry Pi Zero 2 W without pandas.
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ class Event:
     kickoff: datetime       # timezone-aware UTC
     league: str | None = None
     sources: dict = field(default_factory=dict)  # provider -> provider event id
+    meta: dict = field(default_factory=dict)     # provider extras, e.g. the-odds-api sport key
 
 
 @dataclass
@@ -108,6 +110,99 @@ def ah_break_even(gd_dist: dict[int, float], home_line: float, side: str) -> flo
         elif r < 0:
             lose += p * -r
     return float("inf") if win <= 0 else 1 + lose / win
+
+
+def ou_result(total_goals: int, line: float, side: str) -> float:
+    """Over/under settlement, quarter lines included (2.25, 2.75, ...)."""
+    r = ah_result(total_goals, -line, "home")
+    return r if side == "over" else -r
+
+
+def settle(market: str, line: float | None, outcome: str, home_goals: int, away_goals: int) -> float:
+    """Fraction of the stake won (+1, +0.5), pushed (0) or lost (-0.5, -1)."""
+    if market == "1x2":
+        res = "home" if home_goals > away_goals else "away" if away_goals > home_goals else "draw"
+        return 1.0 if res == outcome else -1.0
+    if market == "ou":
+        return ou_result(home_goals + away_goals, float(line), outcome)
+    return ah_result(home_goals - away_goals, float(line), outcome)
+
+
+def profit(result: float, odds: float) -> float:
+    """Profit per unit stake for a settled result at (net) decimal odds."""
+    return result * (odds - 1) if result > 0 else result
+
+
+# ----------------------------------------------- converting between lines
+def score_grid(lh: float, la: float, max_goals: int = 10) -> list[tuple[int, int, float]]:
+    """Independent Poisson scorelines, used to move a price from one line to another."""
+    def pois(lam):
+        p, out = math.exp(-lam), []
+        for k in range(max_goals + 1):
+            out.append(p)
+            p *= lam / (k + 1)
+        return out
+    ph, pa = pois(lh), pois(la)
+    return [(i, j, ph[i] * pa[j]) for i in range(max_goals + 1) for j in range(max_goals + 1)]
+
+
+def grid_fair_odds(grid, market: str, line: float | None, outcome: str) -> float:
+    """No-margin price of a selection under a scoreline distribution (pushes handled)."""
+    win = lose = 0.0
+    for i, j, p in grid:
+        r = settle(market, line, outcome, i, j)
+        if r > 0:
+            win += p * r
+        elif r < 0:
+            lose += p * -r
+    return float("inf") if win <= 0 else 1 + lose / win
+
+
+def _bisect(f, lo: float, hi: float, iters: int = 40) -> float:
+    """Root of an increasing function on [lo, hi] (clamped to the ends)."""
+    if f(lo) >= 0:
+        return lo
+    if f(hi) <= 0:
+        return hi
+    for _ in range(iters):
+        mid = (lo + hi) / 2
+        if f(mid) < 0:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def fit_goals(x12: tuple | None = None, ah: tuple | None = None, ou: tuple | None = None,
+              total: float = 2.6) -> tuple[float, float]:
+    """Home/away goal means matching a market's no-margin prices.
+
+    x12 = (p_home, p_draw, p_away); ah = (home_line, fair_home_odds); ou = (line, fair_over_odds).
+    Supremacy comes from the handicap (or 1X2), the total from over/under (else ``total``).
+    """
+    sup = 0.0
+
+    def lams(t, s):
+        return max((t + s) / 2, 0.02), max((t - s) / 2, 0.02)
+
+    for _ in range(3):
+        if ou:
+            line, fair_over = ou
+            # fair over price falls as the total rises -> increasing function of t
+            total = _bisect(lambda t: fair_over - grid_fair_odds(score_grid(*lams(t, sup)), "ou", line, "over"),
+                            0.5, 7.0)
+        if ah:
+            line, fair_home = ah
+            sup = _bisect(lambda s: fair_home - grid_fair_odds(score_grid(*lams(total, s)), "ah", line, "home"),
+                          -total + 0.05, total - 0.05)
+        elif x12:
+            target = x12[0] - x12[2]
+
+            def diff(s):
+                g = score_grid(*lams(total, s))
+                return sum(p for i, j, p in g if i > j) - sum(p for i, j, p in g if i < j) - target
+            sup = _bisect(diff, -total + 0.05, total - 0.05)
+    return lams(total, sup)
 
 
 # --------------------------------------------------------------- names
