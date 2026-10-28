@@ -82,3 +82,37 @@ def test_settle_applies_exchange_commission(tmp_path):
     res = pd.DataFrame({"match_id": ["m0"], "fthg": [2.0], "ftag": [0.0]})
     summ = upcoming.settle(led, res)
     assert np.isclose(summ["F2"]["roi"], 0.95)
+
+
+def _scored():
+    d = fixture_frame()
+    d["time"], d["oumkt_po25"] = "15:00", [0.52, 0.55, 0.47]
+    for side in ("h", "a"):
+        d[f"{side}_fin_luck"], d[f"{side}_gk_luck"] = 0.0, 0.0
+    d.loc[0, "h_fin_luck"] = 0.4
+    return upcoming.research_layer(d, SPEC)
+
+
+def test_pick_details_handicap_numbers_are_consistent():
+    pk = upcoming.pick_details(_scored(), SPEC)
+    f2 = pk[pk["rule"] == "F2"].iloc[0]
+    assert f2["selection"].startswith("B +0.25")
+    assert f2["our_prob"] > f2["market_prob"]                  # the research favours the pick
+    assert f2["breakeven_odds"] < f2["market_fair_odds"]        # so it needs a lower price
+    assert np.isclose(f2["our_prob"] + f2["push_prob"] + f2["lose_prob"], 1, atol=1e-6)
+    assert (f2["edge_at_best"] > 0) == (f2["best_odds"] > f2["breakeven_odds"])
+    assert f2["min_odds_exchange"] > f2["min_odds"]             # commission needs a higher price
+    assert "A" in f2["reason"] and "luck" in f2["reason"]
+
+
+def test_pick_details_goals_minimum_odds():
+    pk = upcoming.pick_details(_scored(), SPEC)
+    f1 = pk[(pk["rule"] == "F1") & (pk["status"] == "Bet")].iloc[0]
+    assert f1["selection"] == "Over 2.5 goals"
+    assert np.isclose(f1["breakeven_odds"], 1 / f1["our_prob"])
+    assert np.isclose(f1["min_odds"], 1.03 / f1["our_prob"])
+    assert f1["best_odds"] >= f1["min_odds"]
+
+
+def test_pick_details_empty():
+    assert upcoming.pick_details(pd.DataFrame(), SPEC).empty

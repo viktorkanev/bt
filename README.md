@@ -63,7 +63,7 @@ GitHub mirror of the same data (no closing odds, no fixtures).
 | `footy build [--no-gbm]` | Run all rating models over history, train walk-forward models, save predictions (about 8 minutes for 240k matches) |
 | `footy report` | Accuracy tables, strategy grid, dev/holdout backtests, HTML report in `reports/latest/` |
 | `footy backtest --market ou25 --model oublend --price max --edge 0.03 --leagues E1,E2,E3` | Backtest one rule and print the summary plus per-league table |
-| `footy upcoming [--no-fetch]` | Refresh this season's results, pull fixtures with odds, score them (market, research-adjusted and model probabilities, F1/F2 picks), update the paper-trading ledger. Writes `reports/upcoming/index.html` |
+| `footy upcoming [--no-fetch]` | Refresh this season's results, pull fixtures with odds and print the research picks: selection, our vs market probability, break-even odds, minimum odds to bet (also on Betfair after commission), best price now and the edge. Writes `reports/upcoming/index.html` (tabs: Picks, All fixtures, Ledger) and `picks.csv`, and updates the paper-trading ledger |
 | `footy predict` | Same as `footy upcoming --no-fetch` |
 | `footy matchup E0 Arsenal Chelsea` | Predict any match-up from the latest ratings |
 | `footy tune` | Re-tune rating hyper-parameters on the 2003-2013 development window |
@@ -100,9 +100,11 @@ schtasks /Create /TN "footy upcoming" /SC WEEKLY /D TUE,FRI /ST 18:00 ^
 * **Model accuracy**: RPS by model and league, calibration plots.
 * **Match predictor**: any two teams, all models, scoreline grid, O/U and
   handicap fair odds, team-news sliders.
-* **Upcoming & value**: market vs research-adjusted vs model probabilities for every
-  fixture, the F1/F2 research picks, and the paper-trading ledger (ROI and closing-line
-  value). Has a button to refresh results and fixtures.
+* **Upcoming & value** (tabs): **Picks** shows only the plays that match the research, each
+  with the prediction, our vs market probability, break-even and minimum odds, best price
+  now and a Bet / Wait-for-price status; **All fixtures** shows market, research-adjusted
+  and model probabilities for every match; **Ledger** tracks every logged pick (result,
+  return, closing-line value). Has a button to refresh results and fixtures.
 * **Ratings** and **Team news** (manual adjustments from `config/adjustments.yaml`).
 
 ## How it works

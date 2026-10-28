@@ -214,6 +214,171 @@ def research_layer(fx: pd.DataFrame, spec: dict) -> pd.DataFrame:
     return fx
 
 
+# ------------------------------------------------------------- pick details
+AH_OUTCOMES = (("win", 1.0), ("half_win", 0.5), ("push", 0.0), ("half_loss", -0.5), ("loss", -1.0))
+
+
+def _ah_side_outcomes(lh, la, line, side, rho) -> dict[str, np.ndarray]:
+    """Probability of each handicap result (full/half win, push, half/full loss) for a side."""
+    lh = np.clip(np.asarray(lh, float), 0.05, None)
+    la = np.clip(np.asarray(la, float), 0.05, None)
+    diffs, pgd = goal_diff_dist(score_matrix(lh, la, rho))
+    res = ah_settle(diffs[None, :], np.asarray(line, float)[:, None])
+    res = np.where(np.asarray(side)[:, None] == 0, res, -res)
+    return {k: (pgd * np.isclose(res, v)).sum(axis=1) for k, v in AH_OUTCOMES}
+
+
+def _break_even(o: dict) -> np.ndarray:
+    """Decimal odds at which the bet has zero expected value."""
+    return 1 + (o["loss"] + 0.5 * o["half_loss"]) / np.maximum(o["win"] + 0.5 * o["half_win"], 1e-9)
+
+
+def _ah_ev(o: dict, odds) -> np.ndarray:
+    odds = np.asarray(odds, float)
+    return (odds - 1) * (o["win"] + 0.5 * o["half_win"]) - (o["loss"] + 0.5 * o["half_loss"])
+
+
+def _calibrate_supremacy(lh, la, line, target_home_be, rho, iters: int = 40) -> np.ndarray:
+    """Goal-supremacy shift that makes the model reproduce the market's handicap price."""
+    lo = np.full(len(line), -4.0)
+    hi = np.full(len(line), 4.0)
+    zeros = np.zeros(len(line), dtype=int)
+    for _ in range(iters):
+        mid = (lo + hi) / 2
+        be = _break_even(_ah_side_outcomes(lh + mid / 2, la - mid / 2, line, zeros, rho))
+        short = be > target_home_be  # home not strong enough yet
+        lo = np.where(short, mid, lo)
+        hi = np.where(short, hi, mid)
+    return (lo + hi) / 2
+
+
+def _commission_needed(book_odds) -> np.ndarray:
+    """Exchange price needed to match a bookmaker price after commission."""
+    c = forward.COMMISSION["bfe"]
+    return 1 + (np.asarray(book_odds, float) - 1) / (1 - c)
+
+
+def _luck_reason(r: pd.Series) -> str:
+    delta = r["luck_shift_goals"]
+    side = "h" if delta < 0 else "a"
+    team = r["home"] if side == "h" else r["away"]
+    fin, gk = r.get(f"{side}_fin_luck", np.nan), r.get(f"{side}_gk_luck", np.nan)
+    bits = []
+    if np.isfinite(fin) and fin > 0.05:
+        bits.append(f"scored {fin:.2f} goals a game more than their shots on target justify")
+    if np.isfinite(gk) and gk > 0.05:
+        bits.append(f"conceded {gk:.2f} a game fewer than the shots they faced justify")
+    why = " and ".join(bits) if bits else "have had better luck than their opponents"
+    return (f"Recently {team} {why}. Bookmakers over-rate that kind of luck; "
+            f"the correction is worth about {abs(delta):.2f} goals.")
+
+
+def pick_details(fx: pd.DataFrame, spec: dict) -> pd.DataFrame:
+    """One row per research pick (and near-miss) with plain-language fields.
+
+    Probabilities are ours (after the research correction) and the market's
+    (margin removed). ``breakeven_odds`` is the lowest price at which the bet is
+    profitable on average; ``min_odds`` adds the rule's required edge.
+    """
+    rows = []
+    f1 = spec["F1"]
+    rho = spec["F2"]["rho"]
+    if fx.empty or "f2_pick" not in fx:
+        fx = pd.DataFrame(columns=["f2_pick", "tier", f"{f1['model']}_po25"])
+    # ---- F2 luck-fade handicap picks
+    pk = fx[fx["f2_pick"].fillna("") != ""]
+    if len(pk):
+        side = (pk["f2_side"] == "away").astype(int).to_numpy()
+        line = pk["f2_line"].to_numpy(float)
+        bk = pk["f2_book"].to_numpy()
+        oh = np.array([r[f"{b}_ahh"] for (_, r), b in zip(pk.iterrows(), bk)], float)
+        oa = np.array([r[f"{b}_aha"] for (_, r), b in zip(pk.iterrows(), bk)], float)
+        fair = market.devig(np.c_[oh, oa], "power")
+        s0 = _calibrate_supremacy(pk["x_lh"].to_numpy(), pk["x_la"].to_numpy(), line, 1 / fair[:, 0], rho)
+        s1 = s0 + pk["luck_shift_goals"].to_numpy()
+        lh, la = pk["x_lh"].to_numpy(), pk["x_la"].to_numpy()
+        mk = _ah_side_outcomes(lh + s0 / 2, la - s0 / 2, line, side, rho)
+        rs = _ah_side_outcomes(lh + s1 / 2, la - s1 / 2, line, side, rho)
+        be, be_mkt = _break_even(rs), _break_even(mk)
+        for i, (_, r) in enumerate(pk.iterrows()):
+            col = "ahh" if side[i] == 0 else "aha"
+            prices = {v: r.get(f"{v}_{col}", np.nan) for v in F2_VENUES}
+            prices = {v: o for v, o in prices.items() if np.isfinite(o)}
+            best_v = max(prices, key=lambda v: float(forward.effective_odds(v, prices[v])))
+            best_net = float(forward.effective_odds(best_v, prices[best_v]))
+            team_line = r["f2_pick"].rsplit(" ", 1)[-1]
+            edge = float(_ah_ev({k: rs[k][[i]] for k in rs}, [best_net])[0])
+            rows.append({
+                "match_id": r["match_id"], "date": r["date"], "time": _txt(r["time"]),
+                "league": r["league"], "league_name": L.league_name(r["league"]),
+                "home": r["home"], "away": r["away"], "rule": "F2", "rule_name": "Luck fade",
+                "market": "Asian handicap",
+                "selection": f"{r['f2_pick'].rsplit(' ', 1)[0]} {team_line} (Asian handicap)",
+                "our_prob": float(rs["win"][i] + rs["half_win"][i]),
+                "market_prob": float(mk["win"][i] + mk["half_win"][i]),
+                "push_prob": float(rs["push"][i]),
+                "lose_prob": float(rs["loss"][i] + rs["half_loss"][i]),
+                "half_result_prob": float(rs["half_win"][i] + rs["half_loss"][i]),
+                "breakeven_odds": float(be[i]), "market_fair_odds": float(be_mkt[i]),
+                "min_odds": float(be[i]), "min_odds_exchange": float(_commission_needed(be[i])),
+                "best_odds": float(prices[best_v]), "best_book": BOOK_NAMES.get(best_v, best_v),
+                "edge_at_best": edge, "status": "Bet" if edge > 0 else "Wait",
+                "reason": _luck_reason(r),
+            })
+    # ---- F1 lower-division over/under picks and near misses
+    po = fx[f"{f1['model']}_po25"]
+    for _, r in fx[fx["tier"].isin(f1["tiers"]) & po.notna()].iterrows():
+        p_over = float(r[f"{f1['model']}_po25"])
+        m_over = float(r["oumkt_po25"]) if np.isfinite(r.get("oumkt_po25", np.nan)) else np.nan
+        cands = []
+        for label, p, m, col in (("Over 2.5 goals", p_over, m_over, "o25"),
+                                 ("Under 2.5 goals", 1 - p_over, 1 - m_over, "u25")):
+            prices = {v: r.get(f"{v}_{col}", np.nan) for v in forward.venues(f1["prices"])}
+            prices = {v: o for v, o in prices.items() if np.isfinite(o) and o <= f1["max_odds"]}
+            if not prices:
+                continue
+            best_v = max(prices, key=lambda v: float(forward.effective_odds(v, prices[v])))
+            ev = p * float(forward.effective_odds(best_v, prices[best_v])) - 1
+            cands.append((label, p, m, best_v, prices[best_v], ev))
+        if not cands:
+            continue
+        label, p, m, best_v, best_o, ev = max(cands, key=lambda c: c[5])
+        picked = bool(r.get("f1_pick"))
+        near = (not picked and -0.04 <= ev < f1["min_edge"] and np.isfinite(m) and p - m >= 0.02)
+        if not (picked or near):
+            continue
+        if picked:  # use the price the rule actually picked
+            label = "Over 2.5 goals" if r["f1_pick"].startswith("Over") else "Under 2.5 goals"
+            p = float(r["f1_prob"])
+            m = m_over if label.startswith("Over") else 1 - m_over
+            best_v, best_o, ev = r["f1_book"], float(r["f1_odds"]), float(r["f1_ev"])
+        more = label.startswith("Over")
+        rows.append({
+            "match_id": r["match_id"], "date": r["date"], "time": _txt(r["time"]),
+            "league": r["league"], "league_name": L.league_name(r["league"]),
+            "home": r["home"], "away": r["away"], "rule": "F1", "rule_name": "Lower-league goals",
+            "market": "Over/under 2.5", "selection": label, "our_prob": p, "market_prob": m,
+            "push_prob": 0.0, "lose_prob": 1 - p, "half_result_prob": 0.0,
+            "breakeven_odds": 1 / p, "market_fair_odds": 1 / m if np.isfinite(m) and m > 0 else np.nan,
+            "min_odds": (1 + f1["min_edge"]) / p,
+            "min_odds_exchange": float(_commission_needed((1 + f1["min_edge"]) / p)),
+            "best_odds": float(best_o), "best_book": BOOK_NAMES.get(best_v, best_v),
+            "edge_at_best": ev, "status": "Bet" if picked else "Wait",
+            "reason": (f"Our goals model gives a {p_over:.0%} chance of 3+ goals against the market's "
+                       f"{m_over:.0%}. It expects {'more' if more else 'fewer'} goals than priced; "
+                       f"this rule has only been profitable below the top flight."),
+        })
+    cols = ["match_id", "date", "time", "league", "league_name", "home", "away", "rule", "rule_name",
+            "market", "selection", "our_prob", "market_prob", "push_prob", "lose_prob",
+            "half_result_prob", "breakeven_odds", "market_fair_odds", "min_odds", "min_odds_exchange",
+            "best_odds", "best_book", "edge_at_best", "status", "reason"]
+    out = pd.DataFrame(rows, columns=cols)
+    if len(out):
+        out = out.sort_values(["status", "date", "time", "league"],
+                              key=lambda c: c.map({"Bet": 0, "Wait": 1}) if c.name == "status" else c)
+    return out.reset_index(drop=True)
+
+
 # ------------------------------------------------------------------ ledger
 LEDGER_COLS = ["logged_at", "match_id", "date", "league", "home", "away", "rule", "pick", "side",
                "line", "book", "odds", "prob", "ev", "signal"]
@@ -250,9 +415,8 @@ def update_ledger(fx: pd.DataFrame, matches: pd.DataFrame, path: Path = LEDGER) 
     return led, settle(led, matches)
 
 
-def settle(led: pd.DataFrame, matches: pd.DataFrame) -> dict:
-    if led.empty:
-        return {"logged": 0}
+def settle_rows(led: pd.DataFrame, matches: pd.DataFrame) -> pd.DataFrame:
+    """Ledger rows with result, return per unit and closing-line value where known."""
     close = [f"{bk}_{o}" for bk in forward.CLOSING_BOOKS for o in ("o25", "u25", "ahh", "aha")]
     cols = ["match_id", "fthg", "ftag"] + [c for c in close + ["ahc_line"] if c in matches.columns]
     m = led.merge(matches[cols], on="match_id", how="left")
@@ -278,6 +442,19 @@ def settle(led: pd.DataFrame, matches: pd.DataFrame) -> dict:
     clv = np.where(f1, cl1, np.where(f2, cl2, np.nan))
     m["clv_book"] = np.where(f1, bk1, bk2)
     m["ret"], m["clv"] = ret, clv
+    m["settled"] = done
+    m["result"] = np.where(~done, "pending",
+                           np.where(m["ret"] > 0, "won", np.where(m["ret"] < 0, "lost", "void")))
+    m["score"] = np.where(done, m["fthg"].fillna(0).astype(int).astype(str) + "-"
+                          + m["ftag"].fillna(0).astype(int).astype(str), "")
+    return m
+
+
+def settle(led: pd.DataFrame, matches: pd.DataFrame) -> dict:
+    if led.empty:
+        return {"logged": 0}
+    m = settle_rows(led, matches)
+    done = m["settled"]
     out = {"logged": int(len(m)), "settled": int(done.sum()), "pending": int((~done).sum())}
     for rule in ("F1", "F2"):
         g = m[(m["rule"] == rule) & done]
@@ -306,16 +483,22 @@ def run(fetch: bool = True, out_dir: Path = OUT_DIR) -> dict:
     matches, fixtures = load_inputs(fetch)
     fx = score(matches, fixtures)
     led, summary = update_ledger(fx, matches)
+    spec = json.loads(forward.FROZEN.read_text(encoding="utf-8"))
+    picks = pick_details(fx, spec) if not fx.empty else pick_details(pd.DataFrame(), spec)
+    ledger_rows = settle_rows(led, matches) if len(led) else pd.DataFrame()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     table = fx[[c for c in SHOW if c in fx.columns]] if not fx.empty else pd.DataFrame(columns=SHOW)
     table.to_csv(out_dir / "fixtures.csv", index=False)
+    picks.to_csv(out_dir / "picks.csv", index=False)
     meta = {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "results_through": str(matches.loc[matches["ftr"].notna(), "date"].max().date()),
-            "fixtures": int(len(table)), "f1_picks": int((table["f1_pick"] != "").sum()) if len(table) else 0,
+            "fixtures": int(len(table)), "bets": int((picks["status"] == "Bet").sum()),
+            "watch": int((picks["status"] == "Wait").sum()),
+            "f1_picks": int((table["f1_pick"] != "").sum()) if len(table) else 0,
             "f2_picks": int((table["f2_pick"] != "").sum()) if len(table) else 0, "ledger": summary}
     (out_dir / "summary.json").write_text(json.dumps(meta, indent=2, default=float), encoding="utf-8")
-    (out_dir / "index.html").write_text(render_html(table, meta), encoding="utf-8")
+    (out_dir / "index.html").write_text(render_html(table, meta, picks, ledger_rows), encoding="utf-8")
     return meta
 
 
@@ -334,96 +517,195 @@ def _signed(x, d=1) -> str:
     return "–" if x is None or not np.isfinite(x) else f"{x * 100:+.{d}f}%"
 
 
-def render_html(t: pd.DataFrame, meta: dict) -> str:
+def _odds(x) -> str:
+    return "–" if x is None or not np.isfinite(x) else f"{x:.2f}"
+
+
+def _when(date, time) -> str:
+    d = pd.Timestamp(date)
+    return f"{d.strftime('%a %d %b')} {_txt(time)}".strip()
+
+
+CSS = """
+:root { --bg:#f4f6f5; --surface:#fff; --surface-2:#eef2f0; --ink:#13201a; --ink-2:#46544c; --muted:#6f7d75;
+  --rule:#dbe3de; --accent:#1c5cab; --ours:#2a78d6; --mkt:#9aa7a0; --good:#0a7d0a; --good-bg:#e3f4e3;
+  --wait:#8a5a00; --wait-bg:#fbf0d9; --bad:#b42828;
+  --display:"Barlow Condensed","Arial Narrow",sans-serif; --body:"IBM Plex Sans",system-ui,"Segoe UI",sans-serif; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111513; --surface:#181d1a; --surface-2:#1f2522; --ink:#eef2ef;
+  --ink-2:#b8c3bd; --muted:#8b9890; --rule:#2b3330; --accent:#6da7ec; --ours:#3987e5; --mkt:#5d6a63;
+  --good:#5fd35f; --good-bg:#16301a; --wait:#f0b84a; --wait-bg:#33290f; --bad:#ef7070; color-scheme:dark; } }
+:root[data-theme="dark"] { --bg:#111513; --surface:#181d1a; --surface-2:#1f2522; --ink:#eef2ef;
+  --ink-2:#b8c3bd; --muted:#8b9890; --rule:#2b3330; --accent:#6da7ec; --ours:#3987e5; --mkt:#5d6a63;
+  --good:#5fd35f; --good-bg:#16301a; --wait:#f0b84a; --wait-bg:#33290f; --bad:#ef7070; color-scheme:dark; }
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+body { background:var(--bg); color:var(--ink); font:15px/1.5 var(--body); margin:0; }
+.wrap { max-width:1000px; margin:0 auto; padding:20px max(16px, env(safe-area-inset-right, 0px)) 56px max(16px, env(safe-area-inset-left, 0px));
+  display:grid; gap:16px; }
+h1,h2,h3 { font-family:var(--display); margin:0; line-height:1.1; text-wrap:balance; }
+h1 { font-size:clamp(30px,6vw,44px); } h2 { font-size:24px; } h3 { font-size:18px; font-weight:600; }
+.sub { color:var(--ink-2); margin:0; max-width:70ch; } .muted { color:var(--muted); } .small { font-size:12.5px; }
+.eyebrow { font:600 12px var(--body); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+.tabs { display:flex; gap:4px; border-bottom:1px solid var(--rule); position:sticky; top:env(safe-area-inset-top, 0px); background:var(--bg); z-index:2; padding-top:4px; overflow-x:auto; }
+body::before { content:""; position:fixed; inset:0 0 auto; height:env(safe-area-inset-top, 0px); z-index:10; background:var(--bg); }
+.tabs button { font:600 14px var(--body); color:var(--ink-2); background:none; border:0; padding:10px 14px; cursor:pointer;
+  border-bottom:3px solid transparent; }
+.tabs button[aria-selected="true"] { color:var(--ink); border-bottom-color:var(--accent); }
+.tabs button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.count { font:600 12px var(--body); background:var(--surface-2); border-radius:999px; padding:1px 7px; margin-left:4px; }
+.cards { display:grid; gap:12px; }
+.card { background:var(--surface); border:1px solid var(--rule); border-radius:12px; padding:14px 16px; display:grid; gap:10px; }
+.top { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 12px; align-items:center; }
+.meta { font-size:12.5px; color:var(--muted); }
+.teams { font:700 22px var(--display); }
+.selection { font:600 17px var(--body); }
+.status { display:inline-flex; align-items:center; gap:6px; font:600 13px var(--body); border-radius:999px; padding:3px 10px; }
+.status.bet { color:var(--good); background:var(--good-bg); } .status.wait { color:var(--wait); background:var(--wait-bg); }
+.rule { font-size:12px; font-weight:600; color:var(--ink-2); background:var(--surface-2); border-radius:6px; padding:2px 8px; }
+.probs { display:grid; gap:6px; }
+.bar { display:grid; grid-template-columns:72px minmax(0,1fr) 44px; align-items:center; gap:8px; font-size:13px; }
+.track { height:8px; background:var(--surface-2); border-radius:4px; overflow:hidden; }
+.fill { height:100%; border-radius:4px; } .fill.ours { background:var(--ours); } .fill.mkt { background:var(--mkt); }
+.stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+@media (max-width:600px) { .stats { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+.stat { background:var(--surface-2); border-radius:8px; padding:8px 10px; display:grid; gap:2px; }
+.stat .label { font-size:12px; color:var(--muted); } .stat .value { font:600 20px var(--display); font-variant-numeric:tabular-nums; }
+.stat .note { font-size:11.5px; color:var(--ink-2); }
+.why { font-size:13.5px; color:var(--ink-2); margin:0; }
+.tablewrap { overflow-x:auto; border:1px solid var(--rule); border-radius:10px; background:var(--surface); }
+table { border-collapse:collapse; width:100%; font-size:13px; font-variant-numeric:tabular-nums; }
+th,td { padding:7px 10px; text-align:right; white-space:nowrap; border-bottom:1px solid var(--rule); vertical-align:top; }
+th { font:600 12px var(--body); color:var(--muted); background:var(--surface-2); }
+th.l,td.l { text-align:left; } tbody tr:last-child td { border-bottom:0; }
+.won { color:var(--good); font-weight:600; } .lost { color:var(--bad); font-weight:600; }
+details summary { cursor:pointer; color:var(--ink-2); font-size:13.5px; }
+code { background:var(--surface-2); padding:1px 5px; border-radius:4px; }
+"""
+
+
+def _pick_card(r: pd.Series) -> str:
     e = html.escape
+    bet = r["status"] == "Bet"
+    status = ('<span class="status bet">✓ Bet</span>' if bet else
+              f'<span class="status wait">◷ Wait for {_odds(r["min_odds"])}+</span>')
+    probs = (f'<div class="bar"><span>Our view</span><div class="track"><div class="fill ours" style="width:{r["our_prob"] * 100:.0f}%"></div></div><b>{_pct(r["our_prob"])}</b></div>'
+             f'<div class="bar"><span class="muted">Market</span><div class="track"><div class="fill mkt" style="width:{r["market_prob"] * 100:.0f}%"></div></div><span>{_pct(r["market_prob"])}</span></div>')
+    extra = ""
+    if r["push_prob"] > 0.005:
+        extra += f"Stake refunded {_pct(r['push_prob'])} of the time. "
+    if r["half_result_prob"] > 0.005:
+        extra += f"Half win or half loss {_pct(r['half_result_prob'])}. "
+    win_word = "Chance the bet wins" if r["market"] == "Asian handicap" else "Chance it lands"
+    min_note = "break-even" if r["rule"] == "F2" else "break-even + 3% edge"
+    edge_cls = "won" if r["edge_at_best"] > 0 else "lost"
+    return f"""<article class="card">
+  <div class="top"><span class="meta">{e(_when(r['date'], r['time']))} · {e(r['league_name'])}</span>
+    <span><span class="rule">{e(r['rule_name'])}</span> {status}</span></div>
+  <div class="teams">{e(r['home'])} – {e(r['away'])}</div>
+  <div class="selection">{e(r['selection'])}</div>
+  <div class="probs" aria-label="{win_word}">{probs}<div class="small muted">{e(win_word)}, ours vs the bookmaker's price with its margin removed. {e(extra)}</div></div>
+  <div class="stats">
+    <div class="stat"><span class="label">Break-even odds</span><span class="value">{_odds(r['breakeven_odds'])}</span><span class="note">market fair {_odds(r['market_fair_odds'])}</span></div>
+    <div class="stat"><span class="label">Bet at or above</span><span class="value">{_odds(r['min_odds'])}</span><span class="note">{min_note} · Betfair {_odds(r['min_odds_exchange'])}+</span></div>
+    <div class="stat"><span class="label">Best price now</span><span class="value">{_odds(r['best_odds'])}</span><span class="note">{e(str(r['best_book']))}</span></div>
+    <div class="stat"><span class="label">Edge at that price</span><span class="value {edge_cls}">{_signed(r['edge_at_best'])}</span><span class="note">expected profit per £1</span></div>
+  </div>
+  <p class="why">{e(r['reason'])}</p>
+</article>"""
+
+
+def render_html(t: pd.DataFrame, meta: dict, picks: pd.DataFrame | None = None,
+                ledger_rows: pd.DataFrame | None = None) -> str:
+    e = html.escape
+    picks = picks if picks is not None else pd.DataFrame(columns=["status"])
+    bets = picks[picks["status"] == "Bet"] if len(picks) else picks
+    watch = picks[picks["status"] == "Wait"] if len(picks) else picks
     led = meta.get("ledger", {})
 
-    def ledger_row(rule, name):
-        r = led.get(rule, {})
-        if not r:
-            return f"<tr><td class='l'>{name}</td><td>0</td><td>0</td><td>–</td><td>–</td></tr>"
-        return (f"<tr><td class='l'>{name}</td><td>{r.get('settled', 0)}</td><td>{r.get('pending', 0)}</td>"
-                f"<td>{_signed(r.get('roi', np.nan))}</td><td>{_signed(r.get('avg_clv', np.nan))}"
-                f"{' (' + str(r['clv_bets']) + ')' if r.get('clv_bets') else ''}</td></tr>")
+    picks_html = (f"<h2>Bets now <span class='count'>{len(bets)}</span></h2>"
+                  "<p class='sub small'>Edges are the model's estimates. Track record so far: Luck fade returned "
+                  "about +1% at Bet365 and Pinnacle prices over 4,000+ bets (2019-2026, not statistically proven); "
+                  "Lower-league goals about +5% at the best price across bookmakers (3,660 bets, 2016-2026). "
+                  "Betfair Exchange prices are shown before its 5% commission; the minimum it needs is after.</p>"
+                  + ("<div class='cards'>" + "".join(_pick_card(r) for _, r in bets.iterrows()) + "</div>"
+                     if len(bets) else "<p class='sub'>No research picks at current prices.</p>"))
+    if len(watch):
+        picks_html += (f"<details><summary>Watchlist: {len(watch)} goals plays that need a better price</summary>"
+                       "<div class='cards' style='margin-top:12px'>"
+                       + "".join(_pick_card(r) for _, r in watch.iterrows()) + "</div></details>")
 
-    picks = t[(t["f1_pick"] != "") | (t["f2_pick"] != "")] if len(t) else t
-    pick_cards = []
-    for _, r in picks.iterrows():
-        chips = []
-        if r["f1_pick"]:
-            chips.append(f"<span class='chip f1'>F1 · {e(r['f1_pick'])} @ {r['f1_odds']:.2f} "
-                         f"{e(BOOK_NAMES.get(r['f1_book'], r['f1_book']))} · edge {_signed(r['f1_ev'])}</span>")
-        if r["f2_pick"]:
-            chips.append(f"<span class='chip f2'>F2 · {e(r['f2_pick'])} @ {r['f2_odds']:.2f} "
-                         f"{e(BOOK_NAMES.get(r['f2_book'], r['f2_book']))} · luck signal {_signed(r['f2_signal'])}</span>")
-        pick_cards.append(f"<div class='pick'><div class='when'>{e(str(r['date'])[:10])} {e(_txt(r['time']))} · "
-                          f"{e(L.league_name(r['league']))}</div><div class='teams'>{e(r['home'])} – {e(r['away'])}</div>"
-                          f"<div class='chips'>{''.join(chips)}</div></div>")
     groups = []
     if len(t):
         for (day, lg), g in t.groupby([t["date"].astype(str).str[:10], "league"], sort=True):
             rows = []
             for _, r in g.iterrows():
-                tag = ""
-                if r["f1_pick"] or r["f2_pick"]:
-                    tag = "<span class='dot' title='research pick'></span>"
-                lowd = " <span class='muted'>(little data)</span>" if r.get("low_data") else ""
+                dot = "● " if (r.get("f1_pick") or r.get("f2_pick")) else ""
                 shift = r["luck_shift_goals"]
-                shift_txt = "–" if not np.isfinite(shift) else f"{shift:+.2f}"
                 rows.append(
-                    f"<tr><td class='l'>{tag}{e(r['home'])} – {e(r['away'])}{lowd}<div class='muted small'>{e(_txt(r['time']))}</div></td>"
+                    f"<tr><td class='l'>{dot}{e(r['home'])} – {e(r['away'])}<div class='muted small'>{e(_txt(r['time']))}</div></td>"
                     f"<td>{_pct(r['mkt_ph'])} / {_pct(r['mkt_pd'])} / {_pct(r['mkt_pa'])}</td>"
-                    f"<td><b>{_pct(r['res_ph'])} / {_pct(r['res_pd'])} / {_pct(r['res_pa'])}</b><div class='muted small'>luck shift {shift_txt}</div></td>"
-                    f"<td>{_pct(r['blend_ph'])} / {_pct(r['blend_pd'])} / {_pct(r['blend_pa'])}</td>"
+                    f"<td><b>{_pct(r['res_ph'])} / {_pct(r['res_pd'])} / {_pct(r['res_pa'])}</b></td>"
+                    f"<td>{'–' if not np.isfinite(shift) else f'{shift:+.2f}'}</td>"
                     f"<td>{_pct(r['oumkt_po25'])} → <b>{_pct(r['oublend_po25'])}</b></td></tr>")
-            groups.append(f"<h3>{e(day)} · {e(L.league_name(lg))} <span class='muted'>{e(lg)}</span></h3>"
+            groups.append(f"<h3>{e(pd.Timestamp(day).strftime('%a %d %b'))} · {e(L.league_name(lg))}</h3>"
                           "<div class='tablewrap'><table><thead><tr><th class='l'>Match</th><th>Market H/D/A</th>"
-                          "<th>Research H/D/A</th><th>Model H/D/A</th><th>Over 2.5: market → model</th></tr></thead>"
+                          "<th>Research H/D/A</th><th>Luck shift</th><th>Over 2.5: market → model</th></tr></thead>"
                           f"<tbody>{''.join(rows)}</tbody></table></div>")
-    empty = ("<p class='sub'>No fixtures found. football-data.co.uk publishes upcoming fixtures with odds "
-             "around Tuesday (midweek games) and Friday (weekend). Run <code>footy upcoming</code> again then.</p>")
+    fixtures_html = ("<p class='sub'>Research H/D/A is the market corrected for luck; a negative luck shift means "
+                     "the home side is over-rated. ● marks a match with a research pick.</p>" + "".join(groups)
+                     if groups else
+                     "<p class='sub'>No fixtures found. football-data.co.uk publishes fixtures with odds around "
+                     "Tuesday (midweek) and Friday (weekend). Run <code>footy upcoming</code> again then.</p>")
+
+    def led_row(rule, name):
+        r = led.get(rule, {})
+        return (f"<tr><td class='l'>{name}</td><td>{r.get('settled', 0)}</td><td>{r.get('pending', 0)}</td>"
+                f"<td>{_signed(r.get('roi', np.nan))}</td><td>{_signed(r.get('avg_clv', np.nan))}</td></tr>")
+    ledger_html = ("<p class='sub'>Every pick is logged at the first price seen and settled when the result "
+                   "arrives. Judge the rules on closing-line value (CLV) over 500+ bets, not on a few weeks of ROI.</p>"
+                   "<div class='tablewrap'><table><thead><tr><th class='l'>Rule</th><th>Settled</th><th>Pending</th>"
+                   "<th>ROI</th><th>Avg CLV</th></tr></thead><tbody>"
+                   + led_row("F1", "Lower-league goals (F1)") + led_row("F2", "Luck fade (F2)") + "</tbody></table></div>")
+    if ledger_rows is not None and len(ledger_rows):
+        lr = ledger_rows.sort_values("date", ascending=False).head(200)
+        body = "".join(
+            f"<tr><td class='l'>{e(pd.Timestamp(r['date']).strftime('%d %b'))}</td><td class='l'>{e(r['home'])} – {e(r['away'])}</td>"
+            f"<td class='l'>{e(str(r['pick']))}</td><td>{_odds(float(r['odds']))} <span class='muted small'>{e(BOOK_NAMES.get(r['book'], r['book']))}</span></td>"
+            f"<td>{e(r['score'])}</td><td class='l {r['result']}'>{e(r['result'])}</td><td>{_signed(r['ret'])}</td><td>{_signed(r['clv'])}</td></tr>"
+            for _, r in lr.iterrows())
+        ledger_html += ("<div class='tablewrap'><table><thead><tr><th class='l'>Date</th><th class='l'>Match</th>"
+                        "<th class='l'>Pick</th><th>Odds</th><th>Score</th><th class='l'>Result</th><th>Return</th>"
+                        f"<th>CLV</th></tr></thead><tbody>{body}</tbody></table></div>")
+
+    n_bets = len(bets)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Upcoming Fixtures</title>
+<title>Matchday Picks</title>
+<meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
-<style>
-:root {{ --bg:#f4f6f5; --surface:#fff; --surface-2:#eef2f0; --ink:#13201a; --ink-2:#46544c; --muted:#6f7d75; --rule:#dbe3de;
-  --f1:#2a78d6; --f2:#eb6834; --display:"Barlow Condensed","Arial Narrow",sans-serif; --body:"IBM Plex Sans",system-ui,"Segoe UI",sans-serif; }}
-@media (prefers-color-scheme: dark) {{ :root {{ --bg:#111513; --surface:#181d1a; --surface-2:#1f2522; --ink:#eef2ef; --ink-2:#b8c3bd;
-  --muted:#8b9890; --rule:#2b3330; --f1:#3987e5; --f2:#d95926; color-scheme: dark; }} }}
-* {{ box-sizing:border-box; }}
-body {{ background:var(--bg); color:var(--ink); font:15px/1.5 var(--body); margin:0; }}
-.wrap {{ max-width:1080px; margin:0 auto; padding:24px max(16px, env(safe-area-inset-right, 0px)) 64px max(16px, env(safe-area-inset-left, 0px)); display:grid; gap:18px; }}
-h1,h2,h3 {{ font-family:var(--display); margin:0; line-height:1.1; }}
-h1 {{ font-size:clamp(32px,6vw,46px); }} h2 {{ font-size:26px; }} h3 {{ font-size:19px; font-weight:600; margin-top:8px; }}
-.sub {{ color:var(--ink-2); max-width:70ch; margin:0; }} .muted {{ color:var(--muted); }} .small {{ font-size:12px; }}
-.eyebrow {{ font:600 12px var(--body); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }}
-.picks {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; }}
-.pick {{ background:var(--surface); border:1px solid var(--rule); border-radius:10px; padding:12px 14px; display:grid; gap:6px; }}
-.pick .when {{ font-size:12.5px; color:var(--muted); }} .pick .teams {{ font:600 20px var(--display); }}
-.chips {{ display:flex; flex-wrap:wrap; gap:6px; }}
-.chip {{ font-size:12.5px; padding:4px 8px; border-radius:6px; background:var(--surface-2); border-left:3px solid var(--f1); }}
-.chip.f2 {{ border-left-color:var(--f2); }}
-.dot {{ display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--f2); margin-right:6px; vertical-align:middle; }}
-.tablewrap {{ overflow-x:auto; border:1px solid var(--rule); border-radius:10px; background:var(--surface); }}
-table {{ border-collapse:collapse; width:100%; font-size:13px; font-variant-numeric:tabular-nums; }}
-th,td {{ padding:7px 10px; text-align:right; white-space:nowrap; border-bottom:1px solid var(--rule); vertical-align:top; }}
-th {{ font:600 12px var(--body); color:var(--muted); background:var(--surface-2); }}
-th.l,td.l {{ text-align:left; }} tbody tr:last-child td {{ border-bottom:0; }}
-code {{ background:var(--surface-2); padding:1px 5px; border-radius:4px; }}
-</style></head><body><div class="wrap">
-<div class="eyebrow">Generated {e(meta['generated'])} · results through {e(meta['results_through'])}</div>
-<h1>Upcoming fixtures</h1>
-<p class="sub"><b>Market</b> is the bookmaker's probability with the margin removed. <b>Research</b> corrects it for the
-confirmed luck over-reaction (a positive luck shift favours the home side). <b>Model</b> is our ratings + market blend. Exchange prices are shown before Betfair's 5% commission; edges are after it.
-Picks come from the two frozen research rules, which are still being forward-tested: F1 lower-division over/under 2.5,
-F2 luck-fade Asian handicap. Treat them as paper trades until the ledger shows positive closing-line value over 500 bets.</p>
-<h2>Research picks</h2>
-{('<div class="picks">' + ''.join(pick_cards) + '</div>') if pick_cards else '<p class="sub">No picks for these fixtures.</p>'}
-<h2>Paper-trading ledger</h2>
-<div class="tablewrap"><table><thead><tr><th class="l">Rule</th><th>Settled</th><th>Pending</th><th>ROI</th><th>Avg CLV vs closing price (bets)</th></tr></thead>
-<tbody>{ledger_row('F1', 'F1 lower-division over/under 2.5')}{ledger_row('F2', 'F2 luck-fade Asian handicap')}</tbody></table></div>
-<h2>All fixtures</h2>
-{''.join(groups) if groups else empty}
-</div></body></html>"""
+<style>{CSS}</style></head><body><div class="wrap">
+<div class="eyebrow">Updated {e(meta['generated'])} · results through {e(meta['results_through'])}</div>
+<h1>Matchday picks</h1>
+<p class="sub">Picks from the two research rules: <b>Luck fade</b> (back the team the market over-rates because of lucky finishing
+or goalkeeping, Asian handicap) and <b>Lower-league goals</b> (over/under 2.5 below the top flight). Both are still being
+forward-tested, so stake small or paper-trade until the ledger shows positive closing-line value over 500 bets.</p>
+<nav class="tabs" role="tablist">
+  <button role="tab" id="tab-picks" aria-selected="true" aria-controls="panel-picks">Picks <span class="count">{n_bets}</span></button>
+  <button role="tab" id="tab-fixtures" aria-selected="false" aria-controls="panel-fixtures">All fixtures <span class="count">{len(t)}</span></button>
+  <button role="tab" id="tab-ledger" aria-selected="false" aria-controls="panel-ledger">Ledger</button>
+</nav>
+<section id="panel-picks" role="tabpanel" aria-labelledby="tab-picks" class="cards">{picks_html}</section>
+<section id="panel-fixtures" role="tabpanel" aria-labelledby="tab-fixtures" hidden class="cards">{fixtures_html}</section>
+<section id="panel-ledger" role="tabpanel" aria-labelledby="tab-ledger" hidden class="cards">{ledger_html}</section>
+</div>
+<script>
+document.querySelectorAll('.tabs button').forEach(function (b) {{
+  b.addEventListener('click', function () {{
+    document.querySelectorAll('.tabs button').forEach(function (x) {{
+      var on = x === b; x.setAttribute('aria-selected', on);
+      document.getElementById(x.getAttribute('aria-controls')).hidden = !on;
+    }});
+  }});
+}});
+</script></body></html>"""

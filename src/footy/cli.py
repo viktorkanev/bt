@@ -89,18 +89,23 @@ def _upcoming(args) -> None:
     from . import upcoming
 
     meta = upcoming.run(fetch=not args.no_fetch)
-    print(f"{meta['fixtures']} fixtures scored (results through {meta['results_through']}); "
-          f"research picks: F1 {meta['f1_picks']}, F2 {meta['f2_picks']}")
-    t = pd.read_csv(upcoming.OUT_DIR / "fixtures.csv")
-    if len(t):
-        cols = ["date", "league", "home", "away", "mkt_ph", "res_ph", "blend_ph", "oublend_po25",
-                "f1_pick", "f2_pick"]
-        show = t[[c for c in cols if c in t]].copy()
-        for c in ("mkt_ph", "res_ph", "blend_ph", "oublend_po25"):
-            if c in show:
-                show[c] = (show[c] * 100).round(0)
-        show["date"] = show["date"].astype(str).str[:10]
-        print(show.fillna("").to_string(index=False))
+    print(f"{meta['fixtures']} fixtures scored (results through {meta['results_through']}): "
+          f"{meta['bets']} bets, {meta['watch']} on the watchlist")
+    pf = upcoming.OUT_DIR / "picks.csv"
+    picks = pd.read_csv(pf, parse_dates=["date"]) if pf.exists() else pd.DataFrame()
+    for status, title in (("Bet", "BETS"), ("Wait", "WATCHLIST (needs a better price)")):
+        g = picks[picks["status"] == status] if len(picks) else picks
+        if g.empty:
+            continue
+        print(f"\n{title}")
+        for _, r in g.iterrows():
+            when = f"{r['date']:%a %d %b} {'' if pd.isna(r['time']) else r['time']}".strip()
+            print(f"  {when} · {r['league_name']} · {r['home']} - {r['away']}")
+            print(f"    {r['selection']}  [{r['rule_name']}]")
+            print(f"    our chance {r['our_prob']:.0%} vs market {r['market_prob']:.0%} · "
+                  f"break-even {r['breakeven_odds']:.2f} · bet at {r['min_odds']:.2f}+ "
+                  f"(Betfair {r['min_odds_exchange']:.2f}+)")
+            print(f"    best price now {r['best_odds']:.2f} at {r['best_book']} · edge {r['edge_at_best']:+.1%}")
     led = meta["ledger"]
     for rule in ("F1", "F2"):
         r = led.get(rule)
@@ -108,7 +113,7 @@ def _upcoming(args) -> None:
             print(f"ledger {rule}: settled {r.get('settled', 0)}, pending {r.get('pending', 0)}"
                   + (f", ROI {r['roi']:+.1%}" if "roi" in r else "")
                   + (f", avg CLV {r['avg_clv']:+.1%} over {r['clv_bets']}" if "avg_clv" in r else ""))
-    print(f"open {upcoming.OUT_DIR / 'index.html'}")
+    print(f"\nopen {upcoming.OUT_DIR / 'index.html'}")
 
 
 def _matchup(args) -> None:
