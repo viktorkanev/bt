@@ -61,9 +61,10 @@ DEFAULTS: dict = {
                  "monthly_requests": 250, "min_interval_seconds": 1800, "lookahead_hours": 36,
                  "fixtures_refresh_hours": 24, "max_tournaments": 20, "tournaments_per_request": 10,
                  "cache_file": "oddspapi-cache.json"},
-    "polymarket": {"enabled": False, "sports": [], "series_ids": [], "soccer_tag": "100350",
-                   "markets": ["moneyline", "totals", "spreads"], "interval_seconds": 60,
-                   "lookahead_hours": 36, "catalogue_refresh_minutes": 15},
+    "polymarket": {"enabled": False, "sports": [], "soccer_tag": "100350",  # sports: other sports' codes
+                   "markets": ["moneyline", "totals", "spreads"],
+                   "only_known_matches": True,  # price only matches another feed has (the ones that can alert)
+                   "interval_seconds": 60, "lookahead_hours": 36, "catalogue_refresh_minutes": 60},
     "file": {"enabled": False, "path": "odds.json", "interval_seconds": 30},
     "notify": {"console": True, "telegram_token": "", "telegram_chat_id": "", "ntfy_topic": "",
                "ntfy_server": "https://ntfy.sh"},

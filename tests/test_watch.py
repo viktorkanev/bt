@@ -46,7 +46,10 @@ def test_ah_ev_matches_numpy_version():
 @pytest.mark.parametrize("a,b", [("Man United", "Manchester United"), ("Ath Bilbao", "Athletic Bilbao"),
                                  ("Nott'm Forest", "Nottingham Forest"), ("M'gladbach", "Borussia Monchengladbach"),
                                  ("Paris SG", "Paris Saint Germain"), ("Sheffield Weds", "Sheffield Wednesday"),
-                                 ("Wigan", "Wigan Athletic"), ("Inter", "Inter Milan")])
+                                 ("Wigan", "Wigan Athletic"), ("Inter", "Inter Milan"),
+                                 # Polymarket uses full official names
+                                 ("FC Internazionale Milano", "Inter Milan"), ("Stade Rennais FC 1901", "Rennes"),
+                                 ("Olympique Lyonnais", "Lyon")])
 def test_team_names_match(a, b):
     assert name_score(a, b) >= 0.85
 

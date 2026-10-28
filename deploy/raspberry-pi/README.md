@@ -147,8 +147,11 @@ starts the bankrolls again.
 Turn on `[polymarket]` and its prices join everything else: "wrong odds" alerts
 when a Polymarket share is cheaper than Pinnacle's no-margin price (after the taker
 fee), research picks priced at Polymarket, and a separate Polymarket bankroll on
-the paper-trading page. `python3 -m footy.watch polymarket` lists its leagues and
-the next matches it can see.
+the paper-trading page. `python3 -m footy.watch polymarket` shows how many of the
+Odds API's matches Polymarket also lists, with their prices. Only those matches are
+priced: one no other feed has can't be compared with Pinnacle or arbitraged. The
+catalogue asks for just match result, totals and handicap markets (Polymarket also
+lists corners, scorers and more, which would be gigabytes for a Pi Zero).
 
 A Polymarket price of 40c is decimal odds 1/0.40 = 2.50 before the fee. The fee
 for takers is `rate x p x (1-p)` per share (about 1.2c at 50c with the 0.05
@@ -162,6 +165,8 @@ draw at Polymarket 24c, Chelsea 3.50 at Pinnacle is a 5.6% locked-in return.
 Things to know:
 
 * Set `arb_books` to the books you can use, or most arbs will be at books you can't reach.
+  It only limits the alerts: paper trading records arbitrages at every book, like the
+  other strategies.
 * Place the least liquid leg first (usually Polymarket or a soft book), then the rest.
 * Prices move. An arb that is only half placed is a normal bet.
 * Soft bookmakers limit accounts that arb. Pinnacle, Betfair and Polymarket don't

@@ -291,6 +291,9 @@ _ALIASES = {
     "dortmund": "borussia dortmund", "leverkusen": "bayer leverkusen", "bayern munich": "bayern munchen",
     "bayern": "bayern munchen", "rb leipzig": "leipzig", "rasenballsport leipzig": "leipzig",
     "sp lisbon": "sporting lisbon", "sporting cp": "sporting lisbon", "porto": "fc porto",
+    # official names (Polymarket) that share no word with the bookmakers' short names
+    "internazionale milano": "inter milan", "stade rennais": "rennes", "olympique lyonnais": "lyon",
+    "stade brestois": "brest", "stade brestois 29": "brest", "sporting clube portugal": "sporting lisbon",
 }
 
 
@@ -304,7 +307,7 @@ def normalize(name: str) -> str:
     s = re.sub(r"[^a-z0-9 ]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     s = _ALIASES.get(s, s)
-    toks = [t for t in s.split() if t not in _STOP]
+    toks = [t for t in s.split() if t not in _STOP and not (len(t) == 4 and t.isdigit())]  # "1901": founding year
     s = " ".join(toks) if toks else s
     s = s.replace(" utd", " united")
     return _ALIASES.get(s, s)

@@ -1,6 +1,7 @@
 """Polymarket feed, prediction-market fees and arbitrage alerts."""
 
 import json
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 from footy.watch import config as C
@@ -71,6 +72,24 @@ def test_follows_other_feeds_home_away_order():
     assert len(idx.events) == 1 and abs(away.price - 1 / 0.48) < 1e-3   # "Arsenal win" is now the away outcome
 
 
+def test_joins_the_other_feeds_match_when_polymarket_names_differ():
+    idx = EventIndex()
+    idx.add("oddsapi", "x", "Olympiacos", "PAOK Thessaloniki", KO)
+    idx.add("oddsapi", "y", "Aris", "AEK Athens", KO)                  # same kickoff, different match
+    ev = {"id": "9201", "title": "Olympiakós SFP vs. PAOK FC", "markets": [
+        _m("Will Olympiakós SFP win on 2026-11-07?", ["Yes", "No"], ["611", "612"], "moneyline",
+           groupItemTitle="Olympiakós SFP"),
+        _m("Will Olympiakós SFP vs. PAOK FC end in a draw?", ["Yes", "No"], ["621", "622"], "moneyline",
+           groupItemTitle="Draw (Olympiakós SFP vs. PAOK FC)"),
+        _m("Will PAOK FC win on 2026-11-07?", ["Yes", "No"], ["631", "632"], "moneyline", groupItemTitle="PAOK FC")]}
+    books = {t: _book(t, a, 100, a - 0.02) for t, a in (("611", 0.50), ("621", 0.27), ("631", 0.26))}
+    qs = PolymarketProvider.parse([ev], books, idx, now=NOW)
+    assert len(idx.events) == 2                                         # no duplicate "Olympiakos SFP v PAOK"
+    olympiacos = next(e.id for e in idx.events.values() if e.home == "Olympiacos")
+    assert {q.event for q in qs} == {olympiacos}
+    assert {q.outcome: round(1 / q.price, 2) for q in qs} == {"home": 0.50, "draw": 0.27, "away": 0.26}
+
+
 def test_fees_turn_price_into_real_odds_and_back():
     cfg = C.load(None)
     p = 0.48
@@ -124,26 +143,86 @@ def test_arbitrage_across_books_after_fees():
     assert not arb_alerts(idx, one_book, cfg, NOW)                       # one book alone is a data error
 
 
-def test_poll_discovers_football_series_and_batches_books(monkeypatch):
-    calls = []
+# A match only Polymarket lists (no other feed has it, so it can't be compared with anything).
+OTHER = [{"id": "9101", "title": "AS Trenčín vs. ŠK Slovan Bratislava", "markets": [
+    _m("Will AS Trenčín win on 2026-11-07?", ["Yes", "No"], ["811", "812"], "moneyline", groupItemTitle="AS Trenčín"),
+    _m("Will AS Trenčín vs. ŠK Slovan Bratislava end in a draw?", ["Yes", "No"], ["821", "822"], "moneyline",
+       groupItemTitle="Draw (AS Trenčín vs. ŠK Slovan Bratislava)"),
+    _m("Will ŠK Slovan Bratislava win on 2026-11-07?", ["Yes", "No"], ["831", "832"], "moneyline",
+       groupItemTitle="ŠK Slovan Bratislava")]}]
+
+
+def _rows(events):
+    """Gamma /markets rows: flat markets, each naming its parent event, as the real API returns them."""
+    return [{**m, "endDate": "2026-11-07T15:00:00Z", "feesEnabled": True,
+             "feeSchedule": {"exponent": 1, "rate": 0.05, "takerOnly": True, "rebateRate": 0.15},
+             "events": [{"id": e["id"], "title": e["title"], "seriesSlug": "soccer-epl",
+                         "startTime": "2026-11-07T15:00:00Z", "endDate": "2026-11-07T15:00:00Z"}]}
+            for e in events for m in e["markets"]]
+
+
+def test_poll_asks_only_for_needed_markets_and_prices_only_matches_other_feeds_have(monkeypatch):
+    rows, calls = _rows(EVENTS + OTHER), []
 
     def fake(url, data=None, headers=None, timeout=30.0):
-        calls.append((url, data))
-        if url.endswith("/sports"):
-            return [{"sport": "epl", "tags": "1,82,306,100639,100350", "series": "10188"},
-                    {"sport": "nba", "tags": "1,745,100639", "series": "10345"}], {}
-        if "/events?" in url:
-            assert "series_id=10188" in url
-            return EVENTS, {}
-        if url.endswith("/books"):
+        calls.append(url)
+        parts = urllib.parse.urlsplit(url)
+        if parts.path == "/markets":
+            q = urllib.parse.parse_qs(parts.query)
+            assert q["tag_id"] == ["100350"] and q["closed"] == ["false"]
+            assert _pm_time(q["end_date_min"][0]) <= NOW and _pm_time(q["end_date_max"][0]) == NOW + timedelta(hours=36)
+            want = [r for r in rows if r["sportsMarketType"] == q["sports_market_types"][0]]
+            off, lim = int(q["offset"][0]), int(q["limit"][0])
+            return want[off:off + lim], {}
+        if parts.path == "/books":
             toks = [x["token_id"] for x in json.loads(data)]
+            assert not [t for t in toks if t.startswith("8")]          # the Polymarket-only match isn't priced
             return [BOOKS[t] for t in toks if t in BOOKS], {}
-        raise AssertionError(url)
+        raise AssertionError(f"unexpected request {url}")
+
     monkeypatch.setattr(P, "http_json", fake)
-    prov = PolymarketProvider({"lookahead_hours": 36})
-    qs = prov.poll(EventIndex(), NOW)
-    assert len(qs) == 7 and prov.football_series() == ["10188"]
-    assert sum(1 for u, _ in calls if u.endswith("/books")) == 1
-    # outside the lookahead window -> nothing fetched from the order books
-    prov2 = PolymarketProvider({"lookahead_hours": 1})
-    assert prov2.poll(EventIndex(), NOW) == []
+    idx = EventIndex()
+    idx.add("oddsapi", "x", "Arsenal", "Chelsea", KO)                  # the match the Odds API also has
+    qs = PolymarketProvider({"lookahead_hours": 36}).poll(idx, NOW)
+    assert len(qs) == 7 and len(idx.events) == 1
+    assert {u.split("?")[0].rsplit("/", 1)[-1] for u in calls} == {"markets", "books"}   # no crawl of every series
+    assert sum(1 for u in calls if u.endswith("/books")) == 1
+
+
+def test_match_is_priced_once_another_feed_lists_it(monkeypatch):
+    rows = _rows(EVENTS)
+
+    def fake(url, data=None, headers=None, timeout=30.0):
+        parts = urllib.parse.urlsplit(url)
+        if parts.path == "/markets":
+            q = urllib.parse.parse_qs(parts.query)
+            want = [r for r in rows if r["sportsMarketType"] == q["sports_market_types"][0]]
+            return want[int(q["offset"][0]):int(q["offset"][0]) + int(q["limit"][0])], {}
+        if parts.path == "/books":
+            return [BOOKS[t] for t in (x["token_id"] for x in json.loads(data)) if t in BOOKS], {}
+        raise AssertionError(f"unexpected request {url}")
+
+    monkeypatch.setattr(P, "http_json", fake)
+    idx, prov = EventIndex(), PolymarketProvider({"lookahead_hours": 36})
+    assert prov.poll(idx, NOW) == []                                   # no other feed has the match yet
+    idx.add("oddsapi", "x", "Arsenal", "Chelsea", KO)                  # the next Odds API sweep adds it
+    assert len(prov.poll(idx, NOW)) == 7
+    assert len(prov.poll(idx, NOW)) == 7 and len(idx.events) == 1      # and keeps pricing it, no duplicate
+
+
+def test_arbitrage_paper_trades_every_book_while_alerts_stay_at_yours(tmp_path):
+    from footy.watch.server import Watcher
+    cfg = C.load(None)
+    cfg["server"].update({"db": str(tmp_path / "w.db"), "picks_file": str(tmp_path / "picks.json")})
+    cfg["alerts"].update({"arb_books": ["pinnacle", "polymarket"], "value_alerts": False})
+    cfg["notify"] = {"console": False}
+    w = Watcher(cfg, provider_list=[])
+    ev = w.index.add("t", "1", "Arsenal", "Chelsea", KO)
+    quotes = [Quote(ev.id, "1x2", None, o, b, p, NOW) for o, b, p in (
+        ("home", "pinnacle", 2.20), ("draw", "pinnacle", 3.40), ("away", "pinnacle", 3.50),
+        ("home", "polymarket", 1 / 0.40), ("draw", "polymarket", 1 / 0.24), ("away", "sport888", 3.80))]
+    w.quotes = {(q.event, q.market, q.line, q.book, q.outcome): q for q in quotes}
+    sent = [a for a in w.evaluate(NOW) if a.kind == "arb"]
+    assert len(sent) == 1 and {lg["book"] for lg in sent[0].extra["legs"]} == {"pinnacle", "polymarket"}
+    legs = {b["outcome"]: b["book"] for b in w.paper.bets(venue="arb")}
+    assert legs == {"home": "polymarket", "draw": "polymarket", "away": "sport888"}   # best prices anywhere

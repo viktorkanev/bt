@@ -136,13 +136,17 @@ def value_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetim
     return out
 
 
-def arb_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetime) -> list[Alert]:
+def arb_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetime,
+               books: list[str] | None = None) -> list[Alert]:
     """Arbitrage: the best price for every outcome of a market, taken at different books,
-    returns more than the total stake whatever happens (after commission and fees)."""
+    returns more than the total stake whatever happens (after commission and fees).
+
+    ``books`` overrides the configured arb books (paper trading looks at every book).
+    """
     a = cfg["alerts"]
     if not a.get("arb_alerts", True):
         return []
-    allowed = list(a.get("arb_books", ["*"]))
+    allowed = list(books if books is not None else a.get("arb_books", ["*"]))
     max_age = a.get("max_quote_age_minutes", 30)
     min_size = a.get("min_exchange_size", 0)
     out: list[Alert] = []

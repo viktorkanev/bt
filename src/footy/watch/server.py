@@ -159,7 +159,8 @@ class Watcher:
                     if self.paper.strategy_enabled("value") else []
                 if self.picks:
                     pal += pick_alerts(self.picks, self.index, quotes, self.cfg, now, books=["*"])[0]
-                self.paper.place(pal + arbs, self.index, now)
+                pal += arb_alerts(self.index, quotes, self.cfg, now, books=["*"])
+                self.paper.place(pal, self.index, now)
                 self.paper.update_closing(self.index, quotes, now)
             except Exception as e:  # noqa: BLE001
                 log.exception("paper trading step failed: %s", e)

@@ -7,7 +7,9 @@ import json
 import logging
 import shutil
 import sys
+import time
 import urllib.request
+from datetime import timedelta
 from pathlib import Path
 
 from . import config as C
@@ -20,7 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     for name, hlp in (("run", "poll, alert and serve the status page"),
                       ("check", "poll every provider once and print what it found (no notifications)"),
                       ("sports", "list the-odds-api sport keys (all sports, with their group)"),
-                      ("polymarket", "list Polymarket sports and series ids (football marked) and test the feed"),
+                      ("polymarket", "test the Polymarket feed: which Odds API matches it also lists, and prices"),
                       ("notify-test", "send a test notification"),
                       ("paper", "paper-trading results by place and strategy"),
                       ("paper-reset", "delete all paper bets and start the imaginary bankrolls again")):
@@ -116,17 +118,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nrequests used this month: {prov.used} of {prov.monthly}")
         return 0
     if args.cmd == "polymarket":
-        from .core import EventIndex
-        from .providers import PolymarketProvider
+        from .core import EventIndex, parse_time, utcnow
+        from .providers import OddsAPIProvider, PolymarketProvider, oddsapi_sport_kind
         prov = PolymarketProvider(cfg["polymarket"])
-        for sp in prov.list_sports():
-            mark = "football" if prov.is_soccer(sp) else ""
-            print(f"{str(sp.get('sport', '')):<12} series {str(sp.get('series', '')):<14} {mark:<9} "
-                  f"tags {sp.get('tags', '')}")
-        idx = EventIndex()
-        qs = prov.poll(idx)
-        print(f"\n{len(idx.events)} football matches in the next {prov.lookahead_h:g} h, {len(qs)} prices")
-        for ev in sorted(idx.events.values(), key=lambda x: x.kickoff)[:15]:
+        idx, now = EventIndex(), utcnow()
+        if cfg["oddsapi"].get("enabled") and cfg["oddsapi"].get("api_key"):
+            odds = OddsAPIProvider(cfg["oddsapi"])
+            odds.refresh_events(force=True)  # match lists are free: no odds credits used
+            for sport, evs in odds._events.items():
+                for e in evs:
+                    ko = parse_time(e["commence_time"])
+                    if now <= ko <= now + timedelta(hours=prov.lookahead_h):
+                        idx.add("oddsapi", e["id"], e["home_team"], e["away_team"], ko, odds.sports.get(sport),
+                                sport=oddsapi_sport_kind(sport))
+            print(f"Odds API: {len(idx.events)} matches in the next {prov.lookahead_h:g} h")
+        else:
+            prov.only_known = False
+            print("Odds API off: showing every Polymarket football match")
+        t0 = time.time()
+        qs = prov.poll(idx, now)
+        found = {q.event for q in qs}
+        print(f"Polymarket: {prov.listed()} matches listed, {len(found)} of them priced, {len(qs)} prices "
+              f"in {time.time() - t0:.1f}s" + (f" ({prov.last_error})" if prov.last_error else ""))
+        for ev in sorted((idx.events[e] for e in found), key=lambda x: x.kickoff)[:20]:
             mine = sorted((q for q in qs if q.event == ev.id and q.market == "1x2"), key=lambda q: q.outcome)
             print(f"  {ev.kickoff:%a %d %b %H:%M}  {ev.home} v {ev.away}  " +
                   "  ".join(f"{q.outcome} {1 / q.price:.2f}" for q in mine))

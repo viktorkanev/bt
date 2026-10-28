@@ -77,9 +77,9 @@ soccer = []
 # rugbyleague = []
 
 [polymarket]              # Polymarket football markets: public data, no key needed
-enabled = false           # check what's listed with: python3 -m footy.watch polymarket
-sports = []               # codes from that list, e.g. ["epl", "mlb", "nba", "nhl", "atp"]; empty = all football
-interval_seconds = 60
+enabled = false           # test first with: python3 -m footy.watch polymarket
+sports = []               # other sports by code from that list, e.g. ["mlb", "nba", "nhl", "atp"]; football is always on
+interval_seconds = 60     # order-book check, only for matches another feed also has
 
 [fees]                    # prediction-market taker fee: rate * p * (1 - p) per share at price p
 polymarket = 0.05         # check the fee shown on the market; resting limit (maker) orders pay none

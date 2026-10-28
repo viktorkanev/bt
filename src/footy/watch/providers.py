@@ -523,34 +523,47 @@ POLY_KINDS = {"mlb": "baseball", "kbo": "baseball", "npb": "baseball", "nba": "b
               "khl": "icehockey", "shl": "icehockey", "nfl": "americanfootball", "cfb": "americanfootball",
               "ncaaf": "americanfootball", "atp": "tennis", "wta": "tennis", "nrl": "rugbyleague",
               "rugby": "rugbyunion", "urc": "rugbyunion", "top14": "rugbyunion", "volleyball": "volleyball"}
+# Gamma /markets fields the watcher reads; the rest (descriptions, images ...) is dropped on arrival.
+_PM_FIELDS = ("question", "groupItemTitle", "outcomes", "clobTokenIds", "sportsMarketType", "line",
+              "gameStartTime", "active", "closed", "acceptingOrders", "bestAsk", "bestBid")
 
 
 class PolymarketProvider:
-    """Polymarket football markets through the public Gamma (catalogue) and CLOB (order book) APIs.
+    """Polymarket match markets through the public Gamma (catalogue) and CLOB (order book) APIs.
 
     Each outcome is a share paying $1; buying at the best ask ``p`` is decimal odds
     ``1/p`` before the taker fee (``fees.polymarket`` in the config). The best bid
     gives the lay side, and the money at the best ask is the available size.
+
+    Gamma also lists every side market (corners, scorers, exact score, player props ...),
+    gigabytes for football alone, so the catalogue asks /markets for just the winner,
+    totals and handicaps kicking off within the lookahead, one sport tag at a time:
+    football's, plus the tag of each extra sport code in ``sports``. Only matches another
+    feed also has are priced: they are the only ones that can be compared or arbitraged.
     """
 
     name = "polymarket"
     GAMMA = "https://gamma-api.polymarket.com"
     CLOB = "https://clob.polymarket.com"
+    PAGE = 100                      # Gamma's largest page
+    GENERIC_TAGS = {"1", "100639"}  # on every sports entry ("Sports", "Games"): not a league's own tag
 
     def __init__(self, cfg: dict):
         self.book = cfg.get("book_name", "polymarket")
-        self.sports = [str(x) for x in cfg.get("sports", [])]          # codes from /sports; [] = all football
+        self.sports = [str(x) for x in cfg.get("sports", [])]  # extra sports by /sports code; football is always on
         self.kinds = {**POLY_KINDS, **{str(k): str(v) for k, v in cfg.get("sport_kinds", {}).items()}}
-        self.series_ids = [str(x) for x in cfg.get("series_ids", [])]  # explicit override
         self.soccer_tag = str(cfg.get("soccer_tag", "100350"))
         self.markets = set(cfg.get("markets", ["moneyline", "totals", "spreads"]))
         self.lookahead_h = float(cfg.get("lookahead_hours", 36))
         self.min_interval = float(cfg.get("interval_seconds", 60))
-        self.catalogue_refresh_s = float(cfg.get("catalogue_refresh_minutes", 15)) * 60
-        self._series: dict[str, str] = {}
-        self._series_at = 0.0
+        self.catalogue_refresh_s = float(cfg.get("catalogue_refresh_minutes", 60)) * 60
+        self.only_known = bool(cfg.get("only_known_matches", True))
+        self._tags: dict[str, str] = {}
+        self._tags_at = 0.0
         self._events: list[dict] = []
         self._events_at = 0.0
+        self._known: dict[str, tuple[str, bool] | None] = {}  # Polymarket event -> (other feed's event, swapped)
+        self._known_for = None                                  # (catalogue, other feeds' matches) it was made for
         self.last_error = ""
 
     def interval(self, n: int = 0, now: datetime | None = None) -> float:
@@ -572,63 +585,104 @@ class PolymarketProvider:
             return "soccer"
         return self.kinds.get(code) if self.sports else None
 
-    def series(self) -> dict[str, str]:
-        """series id -> sport."""
-        if self.series_ids:
-            return {sid: "soccer" for sid in self.series_ids}
-        if self._series and time.time() - self._series_at < 24 * 3600:
-            return self._series
-        out: dict[str, str] = {}
-        for s in self.list_sports():
+    def tags(self) -> dict[str, str]:
+        """Gamma tag id -> sport to ask for: football's tag, plus each extra sport's own tag."""
+        out = {self.soccer_tag: "soccer"}
+        if not any(self.kinds.get(c) for c in self.sports):
+            return out
+        if self._tags and time.time() - self._tags_at < 24 * 3600:
+            return self._tags
+        try:
+            entries = self.list_sports()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"sports list: {e}"
+            log.warning("polymarket %s", self.last_error)
+            return out
+        for s in entries:
             kind = self.kind_of(s)
-            if kind:
-                for x in str(s.get("series", "")).split(","):
-                    if x.strip():
-                        out[x.strip()] = kind
-        self._series, self._series_at = out, time.time()
+            if kind and kind != "soccer":
+                for t in str(s.get("tags", "")).split(","):
+                    if t.strip() and t.strip() not in self.GENERIC_TAGS:
+                        out[t.strip()] = kind
+        self._tags, self._tags_at = out, time.time()
         return out
 
-    def football_series(self) -> list[str]:
-        return sorted(sid for sid, k in self.series().items() if k == "soccer")
-
-    def _refresh_events(self, now: datetime) -> None:
-        if self._events and time.time() - self._events_at < self.catalogue_refresh_s:
+    def _refresh_catalogue(self, now: datetime) -> None:
+        """Markets of the wanted types kicking off within the lookahead, grouped by event."""
+        if self._events_at and time.time() - self._events_at < self.catalogue_refresh_s:
             return
-        evs: list[dict] = []
-        for sid, kind in sorted(self.series().items()):
-            offset = 0
-            while offset < 2000:
-                url = f"{self.GAMMA}/events?" + urllib.parse.urlencode(
-                    {"series_id": sid, "active": "true", "closed": "false", "limit": 100, "offset": offset})
-                try:
-                    data, _ = http_json(url)
-                except Exception as e:  # noqa: BLE001
-                    self.last_error = f"events series {sid}: {e}"
-                    log.warning(self.last_error)
-                    break
-                batch = data if isinstance(data, list) else (data or {}).get("data", [])
-                for e in batch:
-                    e["_sport"] = kind
-                evs += batch
-                if len(batch) < 100:
-                    break
-                offset += 100
-        lo, hi = now - timedelta(hours=3), now + timedelta(hours=self.lookahead_h)
-        self._events = [e for e in evs if (ko := self.kickoff(e)) is not None and lo <= ko <= hi]
-        self._events_at = time.time()
+        window = {"end_date_min": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "end_date_max": (now + timedelta(hours=self.lookahead_h)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        events: dict[str, dict] = {}
+        for tag, kind in sorted(self.tags().items()):
+            for smt in sorted(self.markets):
+                for offset in range(0, 5000, self.PAGE):
+                    url = f"{self.GAMMA}/markets?" + urllib.parse.urlencode(
+                        {"tag_id": tag, "sports_market_types": smt, "closed": "false", **window,
+                         "limit": self.PAGE, "offset": offset})
+                    try:
+                        rows, _ = http_json(url)
+                    except Exception as e:  # noqa: BLE001
+                        self.last_error = f"markets {kind} {smt}: {e}"
+                        log.warning("polymarket %s", self.last_error)
+                        break
+                    rows = rows if isinstance(rows, list) else []
+                    for m in rows:
+                        parent = (m.get("events") or [{}])[0]
+                        if parent.get("id"):
+                            ev = events.setdefault(str(parent["id"]), {
+                                "id": str(parent["id"]), "title": str(parent.get("title", "")), "_sport": kind,
+                                "markets": []})
+                            ev["markets"].append({k: m.get(k) for k in _PM_FIELDS})
+                    if len(rows) < self.PAGE:
+                        break
+        self._events, self._events_at = list(events.values()), time.time()
 
     def poll(self, index: EventIndex, now: datetime | None = None) -> list[Quote]:
         now = now or utcnow()
-        self._refresh_events(now)
-        tokens = sorted({str(t) for e in self._events for m in e.get("markets", [])
-                         for t in _jlist(m.get("clobTokenIds"))})
+        self._refresh_catalogue(now)
+        state = (self._events_at, frozenset(index.events))
+        if state != self._known_for:  # team-name matching is slow on a Pi: redo it only when something changed
+            self._known = {}
+            for e in self._events:
+                teams, ko = self.teams(e), self.kickoff(e)
+                hit = self.find(*teams, ko, index, e.get("_sport", "soccer")) if teams and ko else None
+                self._known[str(e.get("id"))] = (hit[0].id, hit[1]) if hit else None
+            self._known_for = state
+        events = [e for e in self._events if not self.only_known or self._known.get(str(e.get("id")))]
+        tokens = sorted({str(t) for e in events for m in e.get("markets", []) for t in _jlist(m.get("clobTokenIds"))})
         books: dict[str, dict] = {}
         for i in range(0, len(tokens), 400):  # the API takes up to 500 per call
             data, _ = http_json(f"{self.CLOB}/books", json.dumps([{"token_id": t} for t in tokens[i:i + 400]]).encode(),
                                 {"Content-Type": "application/json"})
             for b in data or []:
                 books[str(b.get("asset_id"))] = b
-        return self.parse(self._events, books, index, self.book, now, self.markets)
+        return self.parse(events, books, index, self.book, now, self.markets, known=self._known)
+
+    def listed(self) -> int:
+        """Matches in the current catalogue (a match's main and "More Markets" events count once)."""
+        return len({(t, self.kickoff(e)) for e in self._events if (t := self.teams(e))})
+
+    @staticmethod
+    def find(home: str, away: str, ko: datetime, index: EventIndex, sport: str = "soccer"):
+        """(the match another feed already has for these teams, whether it lists them the other way round)."""
+        evs = list(index.events.values())
+        for swapped, (h, a) in ((False, (home, away)), (True, (away, home))):
+            ev = match_event(h, a, ko, evs, tol_hours=2.0, min_score=0.8, sport=sport)
+            if ev is not None:
+                return ev, swapped
+        # official names can be far from the bookmakers' ("Olympiakós SFP" v "Olympiacos"): take the one
+        # match at the same kickoff where one team is clearly the same and the other close
+        near = []
+        for ev in evs:
+            if getattr(ev, "sport", "soccer") != sport or abs((ev.kickoff - ko).total_seconds()) > 900:
+                continue
+            for swapped, (h, a) in ((False, (home, away)), (True, (away, home))):
+                sh, sa = name_score(h, ev.home), name_score(a, ev.away)
+                if max(sh, sa) >= 0.9 and min(sh, sa) >= 0.5:
+                    near.append((ev, swapped))
+                    break
+        return near[0] if len(near) == 1 else None
 
     # ------------------------------------------------------------ parsing
     @staticmethod
@@ -692,7 +746,9 @@ class PolymarketProvider:
 
     @classmethod
     def parse(cls, events: list[dict], books: dict[str, dict], index: EventIndex, book: str = "polymarket",
-              now: datetime | None = None, markets: set | None = None) -> list[Quote]:
+              now: datetime | None = None, markets: set | None = None,
+              known: dict[str, tuple[str, bool] | None] | None = None) -> list[Quote]:
+        """``known`` maps Polymarket event ids to another feed's event (worked out by ``poll``)."""
         now = now or utcnow()
         markets = markets or {"moneyline", "totals", "spreads"}
         out: list[Quote] = []
@@ -701,8 +757,16 @@ class PolymarketProvider:
             if not teams or ko is None:
                 continue
             home, away = teams
-            ev, swapped = index.add_oriented(cls.name, str(e.get("id")), home, away, ko,
-                                             sport=e.get("_sport", "soccer"))
+            sport = e.get("_sport", "soccer")
+            if known is not None:
+                k = known.get(str(e.get("id")))
+                hit = (index.events[k[0]], k[1]) if k and k[0] in index.events else None
+            else:
+                hit = cls.find(home, away, ko, index, sport)
+            # join the other feed's match under its names, even when Polymarket's names differ a lot;
+            # the outcomes below still read Polymarket's own names and are turned round if needed
+            link = ((hit[0].away, hit[0].home) if hit[1] else (hit[0].home, hit[0].away)) if hit else (home, away)
+            ev, swapped = index.add_oriented(cls.name, str(e.get("id")), *link, ko, sport=sport)
             for m in e.get("markets", []):
                 if m.get("closed") or m.get("active") is False or m.get("acceptingOrders") is False:
                     continue
