@@ -40,6 +40,14 @@ two or three you need, fewer markets, or a paid plan shortens the gap.
   put the same name in `ntfy_topic`.
 * **Telegram**: create a bot with @BotFather, send it any message, open
   `https://api.telegram.org/bot<TOKEN>/getUpdates` to find your chat id.
+  For a group, add the bot to it; for a channel, make it an admin that can post.
+  Post a message there and `getUpdates` shows the chat id (negative for groups and
+  channels). Telegram takes about 20 messages a minute in a group, so the watcher
+  spaces them about 3 seconds apart; a burst of alerts takes a minute or two to arrive.
+
+Both can be on at once. If one fails, the other still gets the alert, and an alert
+nothing delivered is tried again on the next sweep. A research pick sends one alert at
+its best price and line, and repeats only when that price improves by `reprice_step`.
 
 ## 3. Install on the Pi (Raspberry Pi OS Lite, Bookworm)
 

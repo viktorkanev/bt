@@ -20,7 +20,7 @@ from . import providers as P
 from .core import EventIndex, Quote, parse_time, utcnow
 from .notify import Notifier, book_name, format_alert, local_time
 from .paper import VENUES, FootballDataResults, PaperBook, summarize
-from .rules import Alert, pick_alerts, value_alerts
+from .rules import Alert, best_per_pick, pick_alerts, value_alerts
 from .state import State
 
 log = logging.getLogger(__name__)
@@ -158,13 +158,13 @@ class Watcher:
                 log.exception("paper trading step failed: %s", e)
         sent = []
         tz = self.cfg["server"].get("timezone", "UTC")
-        for al in sorted(alerts, key=lambda x: -x.edge):
+        for al in sorted(best_per_pick(alerts), key=lambda x: -x.edge):
             if self.state.should_send(al, now, a.get("cooldown_minutes", 240), a.get("reprice_step", 0.01)):
                 ev = self.index.events[al.event_id]
                 title, body = format_alert(al, ev.home, ev.away, tz)
-                self.notifier.send(title, body, "high" if al.kind == "pick" else "default")
-                self.state.record(al, now)
-                sent.append(al)
+                if self.notifier.send(title, body, "high" if al.kind == "pick" else "default"):
+                    self.state.record(al, now)  # undelivered alerts are tried again next time
+                    sent.append(al)
         self.state.prune(now - timedelta(days=7))
         return sent
 

@@ -155,6 +155,57 @@ def test_pick_alert_recalculates_moved_handicap_line(tmp_path):
     assert status[1]["best"]["need"] > 2.4
 
 
+# Goal difference (home minus away) for the hand-checked pick tests below. Wigan +0.25
+# (home line -0.25) wins 0.35 + half of the 0.30 draw = 0.50 and loses 0.35, so its
+# expected profit at odds o is 0.5 (o - 1) - 0.35: break-even 1.70. Wigan +0.5 wins 0.65.
+GD = {"-1": 0.35, "0": 0.30, "1": 0.35}
+
+
+def _ah_pick(**kw):
+    pick = {"rule": "F2", "rule_name": "Luck fade", "kickoff": KO.isoformat(), "home": "Bolton", "away": "Wigan",
+            "market": "ah", "side": "away", "line": -0.25, "min_edge": 0.0, "gd_dist": GD}
+    return {**pick, **kw}
+
+
+def test_pick_minimum_price_includes_the_rules_required_edge(tmp_path):
+    idx = EventIndex()
+    ev = idx.add("x", "1", "Bolton", "Wigan", KO)
+    alerts, status = pick_alerts([_ah_pick(min_edge=0.05)], idx,
+                                 [Quote(ev.id, "ah", -0.25, "away", "pinnacle", 1.90)], _cfg(tmp_path), NOW)
+    assert len(alerts) == 1 and abs(alerts[0].edge - 0.10) < 1e-9     # 0.5 * 0.90 - 0.35
+    # a 5% edge needs 0.5 (o - 1) - 0.35 = 0.05 -> o = 1.80, not the 1.70 break-even
+    assert abs(alerts[0].fair_odds - 1.80) < 1e-9 and abs(status[0]["best"]["need"] - 1.80) < 1e-9
+    # over/under: 50% with a 4% edge needs 2.08 after commission; 5% exchange commission -> 1 + 1.08 / 0.95
+    ou = {"rule": "F1", "kickoff": KO.isoformat(), "home": "Bolton", "away": "Wigan", "market": "ou",
+          "side": "over", "line": 2.5, "prob": 0.5, "min_edge": 0.04}
+    alerts, status = pick_alerts([ou], idx, [Quote(ev.id, "ou", 2.5, "over", "betfair_ex_eu", 2.12)],
+                                 _cfg(tmp_path), NOW)
+    assert not alerts                                                  # 0.5 * 2.064 - 1 = +3.2%, short of 4%
+    assert abs(status[0]["best"]["need"] - 2.136842) < 1e-6
+
+
+def test_watcher_sends_one_alert_per_pick_and_repeats_only_for_a_better_price(tmp_path):
+    from footy.watch.server import Watcher
+    cfg = _cfg(tmp_path, value_alerts=False)
+    cfg["paper"]["enabled"] = False
+    w = Watcher(cfg, provider_list=[])
+    ev = w.index.add("x", "1", "Bolton", "Wigan", KO)
+    w.picks = [_ah_pick()]
+
+    def prices(*rows):  # (book, home line, Wigan price)
+        w.quotes = {(ev.id, "ah", ln, bk, "away"): Quote(ev.id, "ah", ln, "away", bk, p) for bk, ln, p in rows}
+
+    # Wigan +0.25 @ 1.90 / 1.95 = +10.0% / +12.5%; Wigan +0.5 @ 1.60 = 0.65 * 0.60 - 0.35 = +4.0%
+    prices(("pinnacle", -0.25, 1.90), ("sport888", -0.25, 1.95), ("williamhill", -0.5, 1.60))
+    assert [(a.book, a.line, a.price) for a in w.evaluate(NOW)] == [("sport888", -0.25, 1.95)]
+    # another book moves ahead, but only to +13.0%: less than reprice_step (1%) above what was sent
+    prices(("pinnacle", -0.25, 1.90), ("sport888", -0.25, 1.90), ("unibet_se", -0.25, 1.96))
+    assert w.evaluate(NOW + timedelta(minutes=10)) == []
+    # +15.0% is clearly better: worth telling again
+    prices(("unibet_se", -0.25, 2.00))
+    assert [(a.book, a.price) for a in w.evaluate(NOW + timedelta(minutes=20))] == [("unibet_se", 2.00)]
+
+
 def test_state_deduplicates(tmp_path):
     idx = EventIndex()
     qs = OddsAPIProvider.parse(ODDSAPI, idx)

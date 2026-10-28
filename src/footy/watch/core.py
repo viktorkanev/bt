@@ -101,7 +101,8 @@ def ah_ev(gd_dist: dict[int, float], home_line: float, side: str, odds: float) -
     return ev
 
 
-def ah_break_even(gd_dist: dict[int, float], home_line: float, side: str) -> float:
+def ah_break_even(gd_dist: dict[int, float], home_line: float, side: str, edge: float = 0.0) -> float:
+    """Lowest (net) odds at which the bet's expected profit reaches ``edge``; 0 = break-even."""
     win = lose = 0.0
     for gd, p in gd_dist.items():
         r = ah_result(int(gd), home_line, side)
@@ -109,7 +110,7 @@ def ah_break_even(gd_dist: dict[int, float], home_line: float, side: str) -> flo
             win += p * r
         elif r < 0:
             lose += p * -r
-    return float("inf") if win <= 0 else 1 + lose / win
+    return float("inf") if win <= 0 else 1 + (lose + edge) / win
 
 
 def ou_result(total_goals: int, line: float, side: str) -> float:

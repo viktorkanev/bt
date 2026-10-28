@@ -30,13 +30,15 @@ class Alert:
     outcome: str
     book: str
     price: float
-    fair_odds: float         # value: reference fair price; pick: our break-even price
+    fair_odds: float         # value: reference fair price; pick: lowest price that still has the rule's edge
     edge: float              # expected profit per unit stake (after commission)
     detail: str = ""
     extra: dict = field(default_factory=dict)
 
     @property
     def key(self) -> str:
+        if self.kind == "pick":  # one alert per research pick, at whichever book and line is best
+            return f"pick|{self.event_id}|{self.market}|{self.outcome}|{self.extra.get('rule_code', '')}"
         return f"{self.kind}|{self.event_id}|{self.market}|{self.line}|{self.outcome}|{self.book}"
 
     def selection(self, home: str = "", away: str = "") -> str:
@@ -151,6 +153,7 @@ def pick_alerts(picks: list[dict], index: EventIndex, quotes: list[Quote], cfg: 
         row["matched"] = True
         best = None
         open_for_bets = within(ev.kickoff, now, a.get("min_minutes_before_kickoff", 2), a.get("lookahead_hours", 48))
+        need_edge = float(pk.get("min_edge", 0.0)) + float(a.get("pick_extra_edge", 0.0))
         for q in by_event.get(ev.id, []):
             if q.market != pk["market"] or q.outcome != pk["side"]:
                 continue
@@ -164,17 +167,17 @@ def pick_alerts(picks: list[dict], index: EventIndex, quotes: list[Quote], cfg: 
                 if q.line is None or abs(q.line - float(pk["line"])) > 1e-9:
                     continue
                 p = float(pk["prob"])
-                edge, need = p * net - 1, gross_needed(1 / p, c)
+                edge, need = p * net - 1, gross_needed((1 + need_edge) / p, c)
             elif pk["market"] == "ah":
                 gd = {int(k): float(v) for k, v in pk["gd_dist"].items()}
                 edge = ah_ev(gd, q.line, q.outcome, net)
-                need = gross_needed(ah_break_even(gd, q.line, q.outcome), c)
+                need = gross_needed(ah_break_even(gd, q.line, q.outcome, need_edge), c)
             else:
                 continue
             cand = {"book": q.book, "price": q.price, "line": q.line, "edge": edge, "need": need}
             if best is None or edge > best["edge"]:
                 best = cand
-            if open_for_bets and edge >= float(pk.get("min_edge", 0.0)) + float(a.get("pick_extra_edge", 0.0)):
+            if open_for_bets and edge >= need_edge:
                 alerts.append(Alert("pick", ev.id, f"{ev.home} v {ev.away}", ev.kickoff, ev.league,
                                     q.market, q.line, q.outcome, q.book, q.price, need, edge,
                                     pk.get("reason", ""), {"rule": pk.get("rule_name", pk.get("rule", "")),
@@ -184,3 +187,12 @@ def pick_alerts(picks: list[dict], index: EventIndex, quotes: list[Quote], cfg: 
         row["best"] = best
         status.append(row)
     return alerts, status
+
+
+def best_per_pick(alerts: list[Alert]) -> list[Alert]:
+    """Keep each research pick's best-priced alert; "wrong odds" alerts stay one per book."""
+    best: dict[str, Alert] = {}
+    for a in alerts:
+        if a.kind == "pick" and (a.key not in best or a.edge > best[a.key].edge):
+            best[a.key] = a
+    return [a for a in alerts if a.kind != "pick"] + list(best.values())
