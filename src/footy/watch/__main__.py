@@ -140,6 +140,11 @@ def main(argv: list[str] | None = None) -> int:
         found = {q.event for q in qs}
         print(f"Polymarket: {prov.listed()} matches listed, {len(found)} of them priced, {len(qs)} prices "
               f"in {time.time() - t0:.1f}s" + (f" ({prov.last_error})" if prov.last_error else ""))
+        try:
+            codes = sorted({str(s.get("sport")) for s in prov.list_sports() if prov.kinds.get(str(s.get("sport")))})
+            print("other sports it lists (codes for [polymarket] sports): " + ", ".join(codes))
+        except Exception as e:  # noqa: BLE001
+            print(f"sports list unavailable: {e}")
         for ev in sorted((idx.events[e] for e in found), key=lambda x: x.kickoff)[:20]:
             mine = sorted((q for q in qs if q.event == ev.id and q.market == "1x2"), key=lambda q: q.outcome)
             print(f"  {ev.kickoff:%a %d %b %H:%M}  {ev.home} v {ev.away}  " +
