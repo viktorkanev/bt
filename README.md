@@ -34,7 +34,12 @@ before a one-shot holdout test on 2016-2026:
   (best: Asian handicap +1.2% over 6,034 bets, not significant). Re-priced at a
   2% margin the same bets project to +2.5% (development and holdout alike).
 * **Forward test:** `footy forward` scores two frozen rules on matches after
-  2026-09-03 with closing-line value against Pinnacle.
+  2026-09-03 with closing-line value (Pinnacle, then Betfair Exchange closing).
+* **Against closing prices** (`docs/CLV_RESULTS.md`, `footy clv`): the luck bias
+  survives even Pinnacle's closing line (t = -4.3, -3.8) but is worth about 1% at
+  sharp prices. The lower-division over/under rule beats the close (+1.2% CLV,
+  +4.8% ROI over 3,660 bets) only at the best price across bookmakers: a
+  line-shopping edge.
 
 ## Quick start
 
@@ -63,6 +68,7 @@ GitHub mirror of the same data (no closing odds, no fixtures).
 | `footy matchup E0 Arsenal Chelsea` | Predict any match-up from the latest ratings |
 | `footy tune` | Re-tune rating hyper-parameters on the 2003-2013 development window |
 | `footy confirm [--window dev\|holdout]` | Re-run the pre-registered market-surprise test |
+| `footy clv` | Closing-line value of the frozen rules on 2016-2026 (needs football-data.co.uk data with closing odds) |
 | `footy forward` | Score the frozen rules (`config/forward_rules.json`) on matches after 2026-09-03 |
 
 ### Weekly routine

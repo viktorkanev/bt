@@ -63,3 +63,22 @@ def test_ledger_settlement_and_closing_value(tmp_path):
     assert np.isclose(summ["F1"]["roi"], -1.0)
     assert np.isclose(summ["F2"]["roi"], 0.5 * (1.95 - 1))
     assert "avg_clv" in summ["F1"] and "avg_clv" in summ["F2"]
+
+
+def test_exchange_commission_and_venue_preference():
+    assert np.isclose(forward.effective_odds("bfe", 2.0), 1.95)
+    assert np.isclose(forward.effective_odds("b365", 2.0), 2.0)
+    d = fixture_frame()
+    d["bfe_ahh"], d["bfe_aha"] = [2.02, 2.00, 1.95], [2.02, 2.00, 2.05]
+    fx = upcoming.research_layer(d, SPEC)
+    assert fx.loc[0, "f2_book"] == "bfe" and fx.loc[0, "f2_odds"] == 2.02
+
+
+def test_settle_applies_exchange_commission(tmp_path):
+    led = pd.DataFrame([{"logged_at": "x", "match_id": "m0", "date": pd.Timestamp("2026-11-01"),
+                         "league": "E1", "home": "A", "away": "B", "rule": "F2", "pick": "A -0.50",
+                         "side": "home", "line": -0.5, "book": "bfe", "odds": 2.0, "prob": np.nan,
+                         "ev": 0.05, "signal": 0.06}])
+    res = pd.DataFrame({"match_id": ["m0"], "fthg": [2.0], "ftag": [0.0]})
+    summ = upcoming.settle(led, res)
+    assert np.isclose(summ["F2"]["roi"], 0.95)

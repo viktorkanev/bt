@@ -44,7 +44,10 @@ log = logging.getLogger(__name__)
 
 OUT_DIR = store.ROOT / "reports" / "upcoming"
 LEDGER = store.ROOT / "reports" / "research" / "forward" / "ledger.csv"
-BOOK_NAMES = {"ps": "Pinnacle", "b365": "Bet365", "max": "Best price", "avg": "Market average"}
+BOOK_NAMES = {"ps": "Pinnacle", "b365": "Bet365", "max": "Best price", "avg": "Market average",
+              "bfe": "Betfair Exchange"}
+# Live picks prefer the exchange when it has a price (no margin, no account limits).
+F2_VENUES = ("bfe", "ps", "b365", "avg", "max")
 
 
 # ----------------------------------------------------------------- inputs
@@ -161,14 +164,16 @@ def research_layer(fx: pd.DataFrame, spec: dict) -> pd.DataFrame:
         res /= res.sum(axis=1, keepdims=True)
         fx.iloc[idx, [fx.columns.get_loc(f"res_{k}") for k in ("ph", "pd", "pa")]] = res
         # F2: luck-fade Asian handicap at the first available book in the frozen order
-        book, oh, oa = _first_book(s, ("ahh", "aha"), f2["prices"])
+        book, oh, oa = _first_book(s, ("ahh", "aha"), F2_VENUES)
+        oh_net = np.where(book.to_numpy() == "bfe", forward.effective_odds("bfe", oh), oh)
+        oa_net = np.where(book.to_numpy() == "bfe", forward.effective_odds("bfe", oa), oa)
         ok = s["ah_line"].notna().to_numpy() & np.isfinite(oh)
         if ok.any():
             diffs, pgd1 = goal_diff_dist(m1[ok])
             _, pgd0 = goal_diff_dist(m0[ok])
             line = s["ah_line"].to_numpy()[ok]
-            eh, ea = ah_ev(diffs, pgd1, line, oh[ok], oa[ok])
-            eh0, ea0 = ah_ev(diffs, pgd0, line, oh[ok], oa[ok])
+            eh, ea = ah_ev(diffs, pgd1, line, oh_net[ok], oa_net[ok])
+            eh0, ea0 = ah_ev(diffs, pgd0, line, oh_net[ok], oa_net[ok])
             sh, sa = eh - eh0, ea - ea0
             side = np.where(sh >= sa, 0, 1)
             sig = np.maximum(sh, sa)
@@ -195,12 +200,12 @@ def research_layer(fx: pd.DataFrame, spec: dict) -> pd.DataFrame:
     elig = fx["tier"].isin(f1["tiers"]).to_numpy() & np.isfinite(po)
     for i in np.flatnonzero(elig):
         best = None
-        for bk in f1["prices"]:
+        for bk in forward.venues(f1["prices"]):
             for side, col, p in (("Over 2.5", f"{bk}_o25", po[i]), ("Under 2.5", f"{bk}_u25", 1 - po[i])):
                 o = fx.iat[i, fx.columns.get_loc(col)] if col in fx else np.nan
                 if not np.isfinite(o) or o > f1["max_odds"]:
                     continue
-                ev = p * o - 1
+                ev = p * float(forward.effective_odds(bk, o)) - 1
                 if f1["min_edge"] <= ev <= f1["max_edge"] and (best is None or ev > best[3]):
                     best = (side, bk, o, ev, p)
         if best:
@@ -253,18 +258,19 @@ def settle(led: pd.DataFrame, matches: pd.DataFrame) -> dict:
     m = led.merge(matches[cols], on="match_id", how="left")
     done = m["fthg"].notna() & m["ftag"].notna()
     m["odds"] = m["odds"].astype(float)
+    net = np.array([float(forward.effective_odds(b, o)) for b, o in zip(m["book"], m["odds"])])
     ret = np.full(len(m), np.nan)
     goals = (m["fthg"] + m["ftag"]).to_numpy()
     gd = (m["fthg"] - m["ftag"]).to_numpy()
     f1 = (m["rule"] == "F1").to_numpy()
     over = m["side"].eq("over").to_numpy()
     win1 = np.where(over, goals > 2.5, goals < 2.5)
-    ret = np.where(f1 & done, np.where(win1, m["odds"] - 1, -1.0), ret)
+    ret = np.where(f1 & done, np.where(win1, net - 1, -1.0), ret)
     f2 = (m["rule"] == "F2").to_numpy()
     home = m["side"].eq("home").to_numpy()
     stl = ah_settle(np.nan_to_num(gd), m["line"].astype(float).to_numpy())
     stl = np.where(home, stl, -stl)
-    ret = np.where(f2 & done, np.where(stl > 0, stl * (m["odds"] - 1), stl), ret)
+    ret = np.where(f2 & done, np.where(stl > 0, stl * (net - 1), stl), ret)
     side_idx = np.where(over | home, 0, 1)
     cl1, bk1 = forward.closing_value(m, ("o25", "u25"), side_idx)
     same = (m["ahc_line"] == m["line"]).to_numpy() if "ahc_line" in m else np.zeros(len(m), bool)
@@ -410,7 +416,7 @@ code {{ background:var(--surface-2); padding:1px 5px; border-radius:4px; }}
 <div class="eyebrow">Generated {e(meta['generated'])} · results through {e(meta['results_through'])}</div>
 <h1>Upcoming fixtures</h1>
 <p class="sub"><b>Market</b> is the bookmaker's probability with the margin removed. <b>Research</b> corrects it for the
-confirmed luck over-reaction (a positive luck shift favours the home side). <b>Model</b> is our ratings + market blend.
+confirmed luck over-reaction (a positive luck shift favours the home side). <b>Model</b> is our ratings + market blend. Exchange prices are shown before Betfair's 5% commission; edges are after it.
 Picks come from the two frozen research rules, which are still being forward-tested: F1 lower-division over/under 2.5,
 F2 luck-fade Asian handicap. Treat them as paper trades until the ledger shows positive closing-line value over 500 bets.</p>
 <h2>Research picks</h2>

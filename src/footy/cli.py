@@ -10,6 +10,7 @@
     footy tune       grid-search rating hyper-parameters on the development window
     footy confirm    re-run the pre-registered market-surprise test (docs/PREREGISTRATION.md)
     footy forward    score the frozen rules on matches after 2026-09-03 (forward test)
+    footy clv        closing-line value of the frozen rules on 2016-2026
     footy all        fetch -> build -> report
 """
 
@@ -142,6 +143,17 @@ def _confirm(args) -> None:
                      indent=2, default=float))
 
 
+def _clv(args) -> None:
+    from .research import clv
+
+    r = clv.run()
+    for k, v in r.items():
+        if k != "by_season":
+            print(k, json.dumps({kk: (round(vv, 4) if isinstance(vv, float) else vv)
+                                 for kk, vv in v.items()}, default=str))
+    print(f"details in {clv.OUT_DIR / 'results.json'}")
+
+
 def _forward(args) -> None:
     from .research import forward
 
@@ -210,6 +222,10 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("confirm", help="re-run the pre-registered market-surprise test")
     c.add_argument("--window", default="holdout", choices=["dev", "holdout"])
     c.set_defaults(func=_confirm)
+
+    cl = sub.add_parser("clv", help="closing-line value of the frozen rules (needs closing odds "
+                                    "from football-data.co.uk)")
+    cl.set_defaults(func=_clv)
 
     fw = sub.add_parser("forward", help="score frozen rules on matches after the freeze date")
     fw.add_argument("--freeze", action="store_true", help="(re)fit and write frozen rules")

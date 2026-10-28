@@ -1,11 +1,187 @@
 {
   "since": "2026-09-03",
-  "matches_after_freeze": 0,
-  "played_after_freeze": 0,
+  "matches_after_freeze": 2124,
+  "played_after_freeze": 2124,
+  "coverage": {
+    "second tiers": {
+      "matches": 383,
+      "oublend_po25": 1.0,
+      "b365_o25": 1.0,
+      "max_o25": 1.0,
+      "avg_o25": 1.0,
+      "ps_o25": 0.0,
+      "avgc_o25": 1.0,
+      "psc_o25": 0.0,
+      "ah_line": 1.0,
+      "b365_ahh": 1.0,
+      "ps_ahh": 0.0,
+      "avg_ahh": 1.0,
+      "max_ahh": 1.0,
+      "avgc_ahh": 1.0,
+      "psc_ahh": 0.0,
+      "d_fin_luck": 0.99,
+      "x_lh": 1.0
+    },
+    "tiers 3-5": {
+      "matches": 353,
+      "oublend_po25": 1.0,
+      "b365_o25": 1.0,
+      "max_o25": 1.0,
+      "avg_o25": 1.0,
+      "ps_o25": 0.0,
+      "avgc_o25": 1.0,
+      "psc_o25": 0.0,
+      "ah_line": 1.0,
+      "b365_ahh": 1.0,
+      "ps_ahh": 0.0,
+      "avg_ahh": 1.0,
+      "max_ahh": 1.0,
+      "avgc_ahh": 1.0,
+      "psc_ahh": 0.0,
+      "d_fin_luck": 1.0,
+      "x_lh": 1.0
+    },
+    "top flights": {
+      "matches": 1388,
+      "oublend_po25": 0.39,
+      "b365_o25": 0.39,
+      "max_o25": 0.39,
+      "avg_o25": 0.39,
+      "ps_o25": 0.0,
+      "avgc_o25": 0.39,
+      "psc_o25": 0.0,
+      "ah_line": 0.39,
+      "b365_ahh": 0.39,
+      "ps_ahh": 0.0,
+      "avg_ahh": 0.39,
+      "max_ahh": 0.39,
+      "avgc_ahh": 0.39,
+      "psc_ahh": 0.0,
+      "d_fin_luck": 0.39,
+      "x_lh": 1.0
+    },
+    "unrecognised_odds_columns": [
+      "BFDA",
+      "BFDCA",
+      "BFDCD",
+      "BFDCH",
+      "BFDD",
+      "BFDH",
+      "BVA",
+      "BVCA",
+      "BVCD",
+      "BVCH",
+      "BVD",
+      "BVH",
+      "BWA",
+      "BWCA",
+      "BWCD",
+      "BWCH",
+      "BWD",
+      "BWH",
+      "HTR",
+      "PPA",
+      "PPCA",
+      "PPCD",
+      "PPCH",
+      "PPD",
+      "PPH",
+      "SKBA",
+      "SKBCA",
+      "SKBCD",
+      "SKBCH",
+      "SKBD",
+      "SKBH"
+    ]
+  },
   "F1": {
-    "note": "no qualifying matches yet"
+    "pending": 0,
+    "bfe": {
+      "bets": 5,
+      "roi": 0.6132000000000001,
+      "profit_units": 3.0660000000000003,
+      "avg_odds": 2.068,
+      "p_value": 0.10871935836610014,
+      "clv_bets": 5,
+      "avg_clv": -0.009541503614682756,
+      "clv_p_value": 0.6610169399739156,
+      "beat_close_rate": 0.4,
+      "clv_benchmark": {
+        "bfec": 5
+      }
+    },
+    "max": {
+      "bets": 8,
+      "roi": 0.54375,
+      "profit_units": 4.35,
+      "avg_odds": 2.2249999999999996,
+      "p_value": 0.08967370980411733,
+      "clv_bets": 8,
+      "avg_clv": -0.013073831213814016,
+      "clv_p_value": 0.7262870443532524,
+      "beat_close_rate": 0.5,
+      "clv_benchmark": {
+        "bfec": 8
+      }
+    }
   },
   "F2": {
-    "note": "no qualifying matches yet"
+    "pending": 0,
+    "avg": {
+      "bets": 86,
+      "roi": 0.02127906976744186,
+      "profit_units": 1.83,
+      "avg_odds": 1.8843023255813955,
+      "p_value": 0.4096794710184721,
+      "clv_bets": 49,
+      "avg_clv": -0.0488322379673968,
+      "clv_p_value": 0.9999998133133853,
+      "beat_close_rate": 0.16326530612244897,
+      "clv_benchmark": {
+        "bfec": 49
+      }
+    },
+    "b365": {
+      "bets": 91,
+      "roi": 0.04879120879120879,
+      "profit_units": 4.4399999999999995,
+      "avg_odds": 1.9375824175824174,
+      "p_value": 0.2992977090247825,
+      "clv_bets": 51,
+      "avg_clv": -0.020878374274441374,
+      "clv_p_value": 0.9929545504547183,
+      "beat_close_rate": 0.37254901960784315,
+      "clv_benchmark": {
+        "bfec": 51
+      }
+    },
+    "bfe": {
+      "bets": 68,
+      "roi": 0.11388602941176469,
+      "profit_units": 7.744249999999999,
+      "avg_odds": 1.9982352941176469,
+      "p_value": 0.14465438835594413,
+      "clv_bets": 38,
+      "avg_clv": 0.01327357812609235,
+      "clv_p_value": 0.10314420403009494,
+      "beat_close_rate": 0.47368421052631576,
+      "clv_benchmark": {
+        "bfec": 38
+      }
+    },
+    "max": {
+      "bets": 91,
+      "roi": 0.04999999999999999,
+      "profit_units": 4.549999999999999,
+      "avg_odds": 1.9436263736263737,
+      "p_value": 0.295051189532521,
+      "clv_bets": 51,
+      "avg_clv": -0.0170037309661943,
+      "clv_p_value": 0.9785805323705647,
+      "beat_close_rate": 0.39215686274509803,
+      "clv_benchmark": {
+        "bfec": 51
+      }
+    }
   }
 }

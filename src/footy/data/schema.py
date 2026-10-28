@@ -7,6 +7,7 @@ are named ``{book}_{outcome}`` where book is one of
 * ``ps``    Pinnacle pre-match odds
 * ``max``   best price across the market
 * ``avg``   market average
+* ``bfe``   Betfair Exchange back price (no margin, but commission on winnings)
 * the same with a ``c`` suffix (``b365c``, ``psc``, ``maxc``, ``avgc``) = closing odds
 
 and outcome is ``h``/``d``/``a`` (1X2), ``o25``/``u25`` (over/under 2.5 goals)
@@ -26,12 +27,13 @@ BASE_COLS = [
     "hs", "as_", "hst", "ast", "hc", "ac", "hf", "af", "hy", "ay", "hr", "ar",
 ]
 
-BOOKS = ["b365", "ps", "max", "avg", "b365c", "psc", "maxc", "avgc"]
+BOOKS = ["b365", "ps", "max", "avg", "bfe", "b365c", "psc", "maxc", "avgc", "bfec"]
 ODDS_1X2 = [f"{b}_{o}" for b in BOOKS for o in ("h", "d", "a")]
 ODDS_OU = [f"{b}_{o}" for b in BOOKS for o in ("o25", "u25")]
 ODDS_AH = ["ah_line", "ahc_line"] + [f"{b}_{o}" for b in BOOKS for o in ("ahh", "aha")]
 ODDS_COLS = ODDS_1X2 + ODDS_OU + ODDS_AH
-ALL_COLS = BASE_COLS + ODDS_COLS
+XG_COLS = ["hxg", "axg"]  # expected goals, in football-data.co.uk files from 2026-27
+ALL_COLS = BASE_COLS + XG_COLS + ODDS_COLS
 
 # football-data.co.uk column candidates (first non-null wins).
 FD_MAP: dict[str, list[str]] = {
@@ -43,6 +45,11 @@ FD_MAP: dict[str, list[str]] = {
     "hs": ["HS"], "as_": ["AS"], "hst": ["HST"], "ast": ["AST"],
     "hc": ["HC"], "ac": ["AC"], "hf": ["HF"], "af": ["AF"],
     "hy": ["HY"], "ay": ["AY"], "hr": ["HR"], "ar": ["AR"],
+    "hxg": ["HxG"], "axg": ["AxG"],
+    "bfe_h": ["BFEH"], "bfe_d": ["BFED"], "bfe_a": ["BFEA"],
+    "bfec_h": ["BFECH"], "bfec_d": ["BFECD"], "bfec_a": ["BFECA"],
+    "bfe_o25": ["BFE>2.5"], "bfe_u25": ["BFE<2.5"], "bfec_o25": ["BFEC>2.5"], "bfec_u25": ["BFEC<2.5"],
+    "bfe_ahh": ["BFEAHH"], "bfe_aha": ["BFEAHA"], "bfec_ahh": ["BFECAHH"], "bfec_aha": ["BFECAHA"],
     "b365_h": ["B365H"], "b365_d": ["B365D"], "b365_a": ["B365A"],
     "ps_h": ["PSH", "PH"], "ps_d": ["PSD", "PD"], "ps_a": ["PSA", "PA"],
     "max_h": ["MaxH", "BbMxH"], "max_d": ["MaxD", "BbMxD"], "max_a": ["MaxA", "BbMxA"],

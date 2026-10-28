@@ -31,6 +31,21 @@ from ..ratings.poisson_math import ah_ev, ah_settle, goal_diff_dist, score_matri
 from . import confirm
 
 FREEZE_DATE = pd.Timestamp("2026-09-03")
+# Betfair Exchange (in football-data.co.uk from 2026-27) is evaluated as an extra venue.
+# It is an execution choice, not a change to the frozen rules. Exchange prices carry no
+# margin but winnings pay commission; 5% is Betfair's standard UK rate.
+EXTRA_PRICES = ("bfe",)
+COMMISSION = {"bfe": 0.05}
+
+
+def effective_odds(book: str, odds):
+    """Decimal odds after commission on net winnings."""
+    c = COMMISSION.get(book, 0.0)
+    return 1 + (np.asarray(odds, dtype=float) - 1) * (1 - c)
+
+
+def venues(prices) -> list[str]:
+    return list(prices) + [p for p in EXTRA_PRICES if p not in prices]
 FROZEN = store.ROOT / "config" / "forward_rules.json"
 OUT_DIR = store.ROOT / "reports" / "research" / "forward"
 F2_COLS = confirm.FEATS + [f"low_{c}" for c in confirm.FEATS]
@@ -54,7 +69,7 @@ def freeze(d: pd.DataFrame | None = None, path: Path = FROZEN) -> dict:
     return spec
 
 
-CLOSING_BOOKS = ("psc", "avgc", "b365c", "maxc")
+CLOSING_BOOKS = ("psc", "bfec", "avgc", "b365c", "maxc")
 
 
 def closing_value(sub: pd.DataFrame, cols: tuple[str, str], side: np.ndarray,
@@ -62,8 +77,8 @@ def closing_value(sub: pd.DataFrame, cols: tuple[str, str], side: np.ndarray,
     """Closing-line value of each bet against the sharpest closing price available.
 
     Pinnacle closing odds disappeared from football-data.co.uk after Pinnacle shut its
-    public API (July 2025), so fall back to the market-average, then Bet365, closing
-    price. Returns (clv, benchmark book) per row; NaN where no closing price exists.
+    public API (July 2025); from 2026-27 the Betfair Exchange closing price takes its
+    place, then the market-average and Bet365 closing prices. Returns (clv, benchmark book) per row; NaN where no closing price exists.
     """
     clv = np.full(len(sub), np.nan)
     used = np.array([""] * len(sub), dtype=object)
@@ -110,13 +125,14 @@ def _f1(d: pd.DataFrame, spec: dict) -> pd.DataFrame:
         return s
     po = s[f"{spec['model']}_po25"].to_numpy()
     rows = []
-    for price in spec["prices"]:
+    for price in venues(spec["prices"]):
         co, cu = f"{price}_o25", f"{price}_u25"
         if co not in s or s[co].isna().all():
             continue
-        odds = s[[co, cu]].to_numpy()
+        raw_odds = s[[co, cu]].to_numpy(dtype=float)
+        odds = effective_odds(price, raw_odds)
         ev = np.stack([po, 1 - po], 1) * odds - 1
-        ok = (ev >= spec["min_edge"]) & (ev <= spec["max_edge"]) & (odds <= spec["max_odds"])
+        ok = (ev >= spec["min_edge"]) & (ev <= spec["max_edge"]) & (raw_odds <= spec["max_odds"])
         ev = np.where(ok, ev, -np.inf)
         j = ev.argmax(1)
         keep = np.isfinite(ev[np.arange(len(s)), j])
@@ -124,12 +140,13 @@ def _f1(d: pd.DataFrame, spec: dict) -> pd.DataFrame:
         jj = j[keep]
         sub["price_book"] = price
         sub["pick"] = np.where(jj == 0, "over 2.5", "under 2.5")
-        sub["odds"] = odds[keep][np.arange(keep.sum()), jj]
+        sub["odds"] = raw_odds[keep][np.arange(keep.sum()), jj]
+        sub["odds_net"] = odds[keep][np.arange(keep.sum()), jj]
         sub["ev"] = ev[keep][np.arange(keep.sum()), jj]
         played = sub["fthg"].notna()
         over = (sub["fthg"] + sub["ftag"]) > 2.5
         win = np.where(jj == 0, over, ~over)
-        sub["ret"] = np.where(played, np.where(win, sub["odds"] - 1, -1.0), np.nan)
+        sub["ret"] = np.where(played, np.where(win, sub["odds_net"] - 1, -1.0), np.nan)
         sub["clv"], sub["clv_book"] = closing_value(sub, ("o25", "u25"), jj)
         rows.append(sub)
     return pd.concat(rows) if rows else pd.DataFrame()
@@ -146,14 +163,15 @@ def _f2(d: pd.DataFrame, spec: dict) -> pd.DataFrame:
     diffs, pgd = goal_diff_dist(score_matrix(lh, la, spec["rho"]))
     _, pgd0 = goal_diff_dist(score_matrix(s["x_lh"].to_numpy(), s["x_la"].to_numpy(), spec["rho"]))
     rows = []
-    for price in spec["prices"]:
+    for price in venues(spec["prices"]):
         ch, ca = f"{price}_ahh", f"{price}_aha"
         if ch not in s or s[ch].isna().all():
             continue
         has = s[[ch, ca]].notna().all(axis=1).to_numpy()
         if not has.any():
             continue
-        a = (s["ah_line"].to_numpy()[has], s[ch].to_numpy()[has], s[ca].to_numpy()[has])
+        a = (s["ah_line"].to_numpy()[has], effective_odds(price, s[ch].to_numpy()[has]),
+             effective_odds(price, s[ca].to_numpy()[has]))
         eh, ea = ah_ev(diffs, pgd[has], *a)
         eh0, ea0 = ah_ev(diffs, pgd0[has], *a)
         sh, sa = eh - eh0, ea - ea0
@@ -169,7 +187,8 @@ def _f2(d: pd.DataFrame, spec: dict) -> pd.DataFrame:
         played = sub["fthg"].notna()
         stl = ah_settle((sub["fthg"] - sub["ftag"]).fillna(0).to_numpy(), sub["ah_line"].to_numpy())
         stl = np.where(sub["side"] == 0, stl, -stl)
-        sub["ret"] = np.where(played, np.where(stl > 0, stl * (sub["odds"] - 1), stl), np.nan)
+        net = effective_odds(price, sub["odds"].to_numpy())
+        sub["ret"] = np.where(played, np.where(stl > 0, stl * (net - 1), stl), np.nan)
         same_line = (sub["ahc_line"].isna() | (sub["ahc_line"] == sub["ah_line"])).to_numpy()
         sub["clv"], sub["clv_book"] = closing_value(sub, ("ahh", "aha"), sub["side"].to_numpy(),
                                                     same_line)

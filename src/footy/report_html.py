@@ -56,6 +56,9 @@ def render(out_dir: Path, standalone: bool = True) -> str:
         f = rdir / w / "results.json"
         if f.exists():
             research[w] = json.loads(f.read_text(encoding="utf-8"))
+    fc = rdir / "clv" / "results.json"
+    if fc.exists():
+        research["clv"] = json.loads(fc.read_text(encoding="utf-8"))
     ff = rdir / "forward" / "summary.json"
     if ff.exists():
         research["forward"] = json.loads(ff.read_text(encoding="utf-8"))
@@ -206,6 +209,10 @@ footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--rule);
         <p class="sub" style="font-size:13px" id="fwdNote"></p></div>
     </div>
     <div class="tablewrap"><table id="hypTable"></table></div>
+    <h3 id="clvHead" hidden>Against closing prices (football-data.co.uk data)</h3>
+    <p class="sub" id="clvSub" hidden style="font-size:13px">Closing-line value = price taken × closing probability − 1. Positive means the bet beat the price the market settled on.
+      The luck bias is still there against Pinnacle's closing line, but at sharp prices it is worth about 1%. The over/under rule beats the close only at the best price across bookmakers.</p>
+    <div class="tablewrap" id="clvWrap" hidden><table id="clvTable"></table></div>
   </section>
 
   <section id="accuracy">
@@ -597,6 +604,20 @@ streamlit run app/dashboard.py</pre>
     const P = hv.H3_margin_projection || [];
     $('projTable').innerHTML = `<thead><tr><th class="l">Bookmaker margin</th><th>ROI</th><th>Bets</th></tr></thead><tbody>` +
       P.map(r => `<tr><td class="l">${(r.margin * 100).toFixed(1)}%${Math.abs(r.margin - 0.036) < 1e-9 ? ' (Bet365, actual)' : Math.abs(r.margin - 0.02) < 1e-9 ? ' (Pinnacle-like)' : ''}</td><td>${pct(r.roi)}</td><td>${int(r.bets)}</td></tr>`).join('') + '</tbody>';
+    const C = RS.clv;
+    if (C) {
+      ['clvHead', 'clvSub', 'clvWrap'].forEach(id => { $(id).hidden = false; });
+      const row = (name, r, note) => r ? `<tr><td class="l wraptext">${esc(name)}</td><td>${pct(r.roi)}</td><td>${r.avg_clv == null ? '–' : pct(r.avg_clv)}</td><td>${int(r.bets)}</td><td>${r.roi_p == null ? '–' : num(r.roi_p, 3)}</td><td class="l wraptext muted">${esc(note || '')}</td></tr>` : '';
+      const ev = C.luck_effect_vs_pinnacle_close || {};
+      $('clvTable').innerHTML = `<thead><tr><th class="l">Rule and price</th><th>ROI</th><th>CLV</th><th>Bets</th><th>p</th><th class="l">Note</th></tr></thead><tbody>` +
+        (ev.t ? `<tr><td class="l wraptext">Luck bias vs Pinnacle closing line</td><td colspan="2">t = ${ev.t.d_fin_luck}, ${ev.t.d_gk_luck}</td><td>${int(ev.n)}</td><td>–</td><td class="l wraptext muted">finishing, keeper luck; matches</td></tr>` : '') +
+        row('Luck-fade handicap @ Pinnacle, pre-match', C.F2_ah_ps, 'every-side baseline CLV ' + pct((C.baselines || {}).ah_pinnacle_every_side_clv)) +
+        row('Luck-fade handicap @ Pinnacle, closing', C.F2_ah_at_close_psc) +
+        row('Luck-fade handicap @ Betfair Exchange, closing, 2026-27', C.F2_ah_at_close_bfec, 'after 5% commission') +
+        row('Lower-league over/under @ best price', C.F1_ou_max, 'every-side baseline CLV ' + pct((C.baselines || {}).ou_max_tiers2_5_every_side_clv)) +
+        row('Over/under @ best price, no model', (C.baselines || {}).ou_line_shopping_no_model, 'pure line shopping') +
+        row('Lower-league over/under @ Pinnacle', C.F1_ou_ps) + '</tbody>';
+    }
     const fw = RS.forward;
     $('fwdNote').textContent = fw && fw.played_after_freeze ? `Forward test since ${fw.since}: ${int(fw.played_after_freeze)} new matches scored.` :
       'Forward test: rules frozen on 3 Sep 2026. No newer matches in this build; run footy fetch, build and forward on a machine with internet access to score them.';

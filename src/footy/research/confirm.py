@@ -138,13 +138,14 @@ def bets_1x2(pred: pd.DataFrame, rule: Rule1X2) -> pd.DataFrame:
 
 
 # ------------------------------------------------- H3: Asian handicap at Bet365
-def _walk_ah(d: pd.DataFrame, test_years: list[int]) -> pd.DataFrame:
+def _walk_ah(d: pd.DataFrame, test_years: list[int], price: str = "b365",
+             line_col: str = "ah_line") -> pd.DataFrame:
     cols = FEATS + [f"low_{c}" for c in FEATS]
     ok = _complete(d, cols + ["res_gd", "x_lh", "x_la"])
     parts = []
     for Y in test_years:
         tr = ok & (d["season_y"] < Y)
-        te = ok & (d["season_y"] == Y) & d["ah_line"].notna() & d["b365_ahh"].notna() & d["b365_aha"].notna()
+        te = ok & (d["season_y"] == Y) & d[line_col].notna() & d[f"{price}_ahh"].notna() & d[f"{price}_aha"].notna()
         if te.sum() == 0 or tr.sum() < 5000:
             continue
         r = sm.OLS(d.loc[tr, "res_gd"], sm.add_constant(d.loc[tr, cols])).fit()
@@ -154,17 +155,17 @@ def _walk_ah(d: pd.DataFrame, test_years: list[int]) -> pd.DataFrame:
         la = np.clip(s["x_la"] - delta / 2, 0.05, None).to_numpy()
         diffs, pgd = goal_diff_dist(score_matrix(lh, la, -0.07))
         _, pgd0 = goal_diff_dist(score_matrix(s["x_lh"].to_numpy(), s["x_la"].to_numpy(), -0.07))
-        args = (s["ah_line"].to_numpy(), s["b365_ahh"].to_numpy(), s["b365_aha"].to_numpy())
+        args = (s[line_col].to_numpy(), s[f"{price}_ahh"].to_numpy(), s[f"{price}_aha"].to_numpy())
         eh, ea = ah_ev(diffs, pgd, *args)
         eh0, ea0 = ah_ev(diffs, pgd0, *args)
         sh, sa = eh - eh0, ea - ea0
         side = np.where(sh >= sa, 0, 1)
         sig = np.maximum(sh, sa)
-        stl = ah_settle((s["fthg"] - s["ftag"]).to_numpy(), s["ah_line"].to_numpy())
+        stl = ah_settle((s["fthg"] - s["ftag"]).to_numpy(), s[line_col].to_numpy())
         stl = np.where(side == 0, stl, -stl)
-        odds = np.where(side == 0, s["b365_ahh"], s["b365_aha"])
-        s["odds_other"] = np.where(side == 0, s["b365_aha"], s["b365_ahh"])
-        s["pick"] = np.where(side == 0, "home ", "away ") + s["ah_line"].map(lambda x: f"{x:+.2f}")
+        odds = np.where(side == 0, s[f"{price}_ahh"], s[f"{price}_aha"])
+        s["odds_other"] = np.where(side == 0, s[f"{price}_aha"], s[f"{price}_ahh"])
+        s["pick"] = np.where(side == 0, "home ", "away ") + s[line_col].map(lambda x: f"{x:+.2f}")
         s["signal"], s["odds"] = sig, odds
         s["win"] = (stl > 0).astype(float)
         s["ret"] = np.where(stl > 0, stl * (odds - 1), stl)

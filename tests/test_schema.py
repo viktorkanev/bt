@@ -42,3 +42,17 @@ def test_mirror_rounding_of_handicap_lines_is_fixed():
     })
     d = normalise_mirror(raw)
     assert d.loc[0, "ah_line"] == -0.75
+
+
+def test_betfair_exchange_and_xg_columns():
+    raw = pd.DataFrame({
+        "Div": ["E1"], "Date": ["24/10/2026"], "Time": ["15:00"], "HomeTeam": ["Leeds"],
+        "AwayTeam": ["Hull"], "FTHG": [2], "FTAG": [0], "HxG": [1.84], "AxG": [0.61],
+        "BFEH": [1.95], "BFED": [3.7], "BFEA": [4.4], "BFECH": [1.88], "BFECD": [3.8], "BFECA": [4.7],
+        "BFE>2.5": [1.9], "BFE<2.5": [2.02], "BFEAHH": [1.98], "BFEAHA": [1.96], "BFECAHH": [1.92],
+        "BFECAHA": [2.02], "AHh": [-0.5], "AHCh": [-0.5],
+    })
+    d = normalise_football_data(raw, "E1")
+    assert d.loc[0, "hxg"] == 1.84 and d.loc[0, "axg"] == 0.61
+    assert d.loc[0, "bfe_h"] == 1.95 and d.loc[0, "bfec_a"] == 4.7
+    assert d.loc[0, "bfe_o25"] == 1.9 and d.loc[0, "bfec_ahh"] == 1.92

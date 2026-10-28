@@ -323,7 +323,8 @@ elif page == "Upcoming & value":
 
     def pick_text(r):
         out = []
-        names = {"ps": "Pinnacle", "b365": "Bet365", "max": "best price", "avg": "market avg"}
+        names = {"ps": "Pinnacle", "b365": "Bet365", "max": "best price", "avg": "market avg",
+                 "bfe": "Betfair Exchange"}
         if isinstance(r.get("f1_pick"), str) and r["f1_pick"]:
             out.append(f"F1 {r['f1_pick']} @ {r['f1_odds']:.2f} ({names.get(r['f1_book'], r['f1_book'])}, "
                        f"edge {r['f1_ev']:+.1%})")
