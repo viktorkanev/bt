@@ -1,7 +1,9 @@
 """Multi-sport support and the OddsPapi feed."""
 
+import io
 import json
 import urllib.error
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -228,21 +230,33 @@ def test_poll_caches_counts_requests_and_spaces_sweeps(tmp_path, monkeypatch):
                     {"fixtureId": "f2", "participant1Name": "A", "participant2Name": "B", "startTime": ISO,
                      "tournamentId": 99, "hasOdds": False}], {}
         if "/odds-by-tournaments?" in url:
-            assert "tournamentIds=17" in url and "bookmakers=pinnacle%2Csingbet%2Csbobet" in url
-            return _odds_payload(), {}
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            if len(q.get("bookmaker", [])) != 1 or "," in q["bookmaker"][0] or "bookmakers" in q:
+                # what the real API answers (2026-10-28) when asked for several bookmakers at once
+                raise urllib.error.HTTPError(url, 400, "Bad Request", {}, io.BytesIO(json.dumps({"error": {
+                    "message": "Invalid number of bookmakers specified.", "code": "INVALID_PARAMETER",
+                    "details": "Please provide exactly one bookmaker using the 'bookmaker' query parameter."}}).encode()))
+            assert q["tournamentIds"] == ["17"]
+            payload = _odds_payload()
+            for f in payload:  # the API returns only the bookmaker asked for
+                f["bookmakerOdds"] = {k: v for k, v in f["bookmakerOdds"].items() if k == q["bookmaker"][0]}
+            return payload, {}
         raise AssertionError(url)
     monkeypatch.setattr(P, "http_json", fake)
     cfg = {"api_key": "secret", "cache_file": str(tmp_path / "c.json"), "sports": {"soccer": []}}
     prov = OddsPapiProvider(cfg)
     qs = prov.poll(EventIndex(), NOW)
-    assert len(qs) == 6 and prov.used == 4 and len(calls) == 4
+    odds_calls = [urllib.parse.parse_qs(urllib.parse.urlsplit(u).query)["bookmaker"][0] for u in calls
+                  if "/odds-by-tournaments" in u]
+    assert sorted(odds_calls) == ["pinnacle", "sbobet", "singbet"]      # one request per bookmaker
+    assert len(qs) == 6 and prov.used == 6 and len(calls) == 6          # sports, markets, fixtures + 3 odds
     # a second sweep only fetches odds; the catalogue and fixtures come from the disk cache
     prov2 = OddsPapiProvider(cfg)
     prov2.poll(EventIndex(), NOW)
-    assert prov2.used == 5 and sum("/odds-by-tournaments" in u for u in calls) == 2
-    # 245 requests left, 1 per sweep, spread over the rest of the month
+    assert prov2.used == 9 and sum("/odds-by-tournaments" in u for u in calls) == 6
+    # 241 requests left, 3 per sweep, spread over the rest of the month
     assert prov2.interval(0, NOW) == pytest.approx(
-        (datetime(2026, 12, 1, tzinfo=timezone.utc) - NOW).total_seconds() / (245 - 10), rel=1e-6)
+        (datetime(2026, 12, 1, tzinfo=timezone.utc) - NOW).total_seconds() / ((241 - 10) / 3), rel=1e-6)
     prov2.cache["usage"]["used"] = 250
     with pytest.raises(RuntimeError):
         prov2.get("/sports")

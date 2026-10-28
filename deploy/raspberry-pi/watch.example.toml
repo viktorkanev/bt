@@ -64,7 +64,7 @@ competitions = []         # Betfair competition ids; empty = all football in loo
 [oddspapi]                # https://oddspapi.io : 350+ bookmakers incl. Pinnacle, SBOBet, Singbet; any sport
 enabled = false
 api_key = ""              # or set FOOTY_ODDSPAPI_KEY; never commit it
-bookmakers = ["pinnacle", "singbet", "sbobet"]   # up to 3; check slugs with: python3 -m footy.watch oddspapi --bookmakers
+bookmakers = ["pinnacle", "singbet", "sbobet"]   # up to 3, each one request a sweep; slugs: python3 -m footy.watch oddspapi --bookmakers
 monthly_requests = 250    # free plan; raise it if you pay. Sweeps are spaced so this lasts the month
 [oddspapi.sports]         # sport = [tournament ids]; [] = the busiest tournaments in the next 36 hours
 soccer = []

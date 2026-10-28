@@ -104,8 +104,11 @@ def main(argv: list[str] | None = None) -> int:
         for t in tids[:25]:
             print(f"  {t:>8}  {per.get(t, 0):>3} fixtures  {names.get(t, '')}")
         if tids:
-            data = prov.get("/odds-by-tournaments", tournamentIds=",".join(tids[:prov.per_request]),
-                            bookmakers=",".join(prov.bookmakers), verbosity=prov.verbosity)
+            data = []  # one request per bookmaker: the API takes exactly one
+            for bk in prov.bookmakers:
+                part = prov.get("/odds-by-tournaments", tournamentIds=",".join(tids[:prov.per_request]),
+                                bookmaker=bk, verbosity=prov.verbosity)
+                data += part if isinstance(part, list) else list(part.values()) if isinstance(part, dict) else []
             idx = EventIndex()
             qs = OddsPapiProvider.parse(data, fx, mmap, idx, args.sport, now, prov.book_names, prov.lookahead_h)
             print(f"\n{len(idx.events)} matches, {len(qs)} prices: " +

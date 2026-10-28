@@ -203,14 +203,15 @@ Turn sports on per feed:
 * **Polymarket**: `sports = ["mlb", "nba", "nhl", "atp", ...]` (codes from `python3 -m footy.watch polymarket`).
 
 **OddsPapi on the free plan (250 requests a month).** One request returns every
-match in up to 10 tournaments for up to 3 bookmakers, and the sport list, market
-list and fixture list are kept on disk (`oddspapi-cache.json`). The watcher counts
-requests and spaces sweeps so they last the month. Each sport costs one fixture
-request a day plus one odds request per sweep, so on the free plan one sport gets a
-sweep about every 3-4 hours and two sports about every 8 hours. Fine for paper
-trading the idea; live alerts need a paid plan (set `monthly_requests` to it).
+match in up to 10 tournaments for one bookmaker (the API takes exactly one), and the
+sport list, market list and fixture list are kept on disk (`oddspapi-cache.json`).
+The watcher counts requests and spaces sweeps so they last the month. Each sport
+costs one fixture request a day plus one odds request per bookmaker per sweep, so on
+the free plan one sport with the three default bookmakers gets a sweep about every
+10 hours (one bookmaker: every 3-4 hours). Fine for paper trading the idea; live
+alerts need a paid plan (set `monthly_requests` to it).
 
-Check it once installed (uses about 4 requests the first time, 1 after):
+Check it once installed (about 6 requests the first time, then one per bookmaker):
 
 ```bash
 python3 -m footy.watch oddspapi --sport soccer --bookmakers

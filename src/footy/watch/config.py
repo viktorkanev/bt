@@ -56,7 +56,7 @@ DEFAULTS: dict = {
     "oddspapi": {"enabled": False, "api_key": "",
                  # sport -> tournament ids; an empty list = the busiest tournaments in the next lookahead_hours
                  "sports": {"soccer": []},
-                 "bookmakers": ["pinnacle", "singbet", "sbobet"],   # up to 3 per request
+                 "bookmakers": ["pinnacle", "singbet", "sbobet"],   # up to 3; each is one request a sweep
                  "book_names": {"betfair-ex": "betfair"},
                  "monthly_requests": 250, "min_interval_seconds": 1800, "lookahead_hours": 36,
                  "fixtures_refresh_hours": 24, "max_tournaments": 20, "tournaments_per_request": 10,

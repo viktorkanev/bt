@@ -4,7 +4,8 @@ Asian books BetInAsia offers (SBOBet, Singbet).
 The free plan allows 250 requests a month, so this provider:
 
 * caches the sport list, market catalogue and fixture list on disk (they change slowly);
-* fetches odds with ``odds-by-tournaments``: many leagues and up to three bookmakers per request;
+* fetches odds with ``odds-by-tournaments``: up to 10 leagues per request, one bookmaker each
+  (the API refuses more than one);
 * counts its requests and spaces sweeps so the monthly allowance lasts until the 1st.
 
 Market ids differ per sport, so they are resolved from the catalogue (``/markets``)
@@ -275,9 +276,10 @@ class OddsPapiProvider:
             fx = self.fixtures(kind, sid, now)
             tids = self.tournaments(kind, fx, now)
             for i in range(0, len(tids), self.per_request):
-                data = self.get("/odds-by-tournaments", tournamentIds=",".join(tids[i:i + self.per_request]),
-                                bookmakers=",".join(self.bookmakers), verbosity=self.verbosity)
-                out += self.parse(data, fx, mmap, index, kind, now, self.book_names, self.lookahead_h)
+                for bk in self.bookmakers:  # the API takes exactly one bookmaker per request
+                    data = self.get("/odds-by-tournaments", tournamentIds=",".join(tids[i:i + self.per_request]),
+                                    bookmaker=bk, verbosity=self.verbosity)
+                    out += self.parse(data, fx, mmap, index, kind, now, self.book_names, self.lookahead_h)
         self._sweep_cost = max(self.used - before, 1)
         return out
 
