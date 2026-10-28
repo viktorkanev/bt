@@ -294,6 +294,7 @@ _ALIASES = {
     # official names (Polymarket) that share no word with the bookmakers' short names
     "internazionale milano": "inter milan", "stade rennais": "rennes", "olympique lyonnais": "lyon",
     "stade brestois": "brest", "stade brestois 29": "brest", "sporting clube portugal": "sporting lisbon",
+    "heart of midlothian": "hearts",
 }
 
 
