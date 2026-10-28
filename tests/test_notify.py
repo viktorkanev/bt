@@ -166,7 +166,30 @@ def test_polymarket_pick_links_to_the_market_and_opens_it_on_tap(services, tmp_p
     ntfy = [r for r in fake.requests if r[0] == "ntfy"]
     assert len(ntfy) == 1 and link in ntfy[0][2] and ntfy[0][3].get("Click") == link
     from footy.watch.server import render
-    assert f"href='{link}'" in render(w)                     # the status page links the live price too
+    page = render(w)
+    assert f"href='{link}'" in page                          # the status page links the live price too
+    assert "2.00 (50¢)" in page                              # ... and shows it in cents as well
+
+
+def test_polymarket_prices_also_show_the_share_price_in_cents():
+    from footy.watch.notify import format_alert, need_text, price_text
+    from footy.watch.paper_web import _place
+    from footy.watch.rules import Alert
+    assert price_text(2.78, "polymarket") == "2.78 (36¢)" and price_text(2.78, "pinnacle") == "2.78"
+    assert price_text(1 / 0.973, "polymarket") == "1.03 (97.3¢)"             # tenth-of-a-cent markets
+    # a minimum price becomes the most to pay per share, rounded down so it never overpays: 1/2.65 = 37.74c
+    assert need_text(2.65, "polymarket") == "2.65 or higher (pay 37.7¢ or less)"
+    assert need_text(1 / 0.38, "polymarket") == "2.63 or higher (pay 38¢ or less)"
+    assert need_text(2.65, "pinnacle") == "2.65 or higher" and need_text(2.65, "polymarket", short=True) == \
+        "2.65+ (pay 37.7¢ or less)"
+    pick = Alert("pick", "e", "Bolton v Wigan", NOW, "E2", "ou", 2.5, "over", "polymarket", 2.78, 2.65, 0.05, "",
+                 {"rule": "Lower-league goals"})
+    title, body = format_alert(pick, "Bolton", "Wigan")
+    assert "2.78 (36¢)" in title and "bet at 2.65 or higher (pay 37.7¢ or less)" in body
+    value = Alert("value", "e", "Bolton v Wigan", NOW, "E2", "1x2", None, "draw", "polymarket", 1 / 0.27, 1 / 0.30,
+                  0.05, "pinnacle 2.25 / 3.30 / 3.40", {})
+    assert "fair price 3.33 (30¢)" in format_alert(value, "Bolton", "Wigan")[1]
+    assert _place({"price": 2.0, "book": "polymarket"}) == "2.00 (50¢) Polymarket"   # paper-trading page
 
 
 def test_arbitrage_alert_links_its_polymarket_leg():

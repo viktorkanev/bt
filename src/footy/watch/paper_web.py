@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 
 from .core import sport_name, utcnow
-from .notify import book_name, local_time
+from .notify import book_name, local_time, price_text
 from .paper import VENUES, summarize, verdict
 from .rules import selection_text
 
@@ -127,7 +127,7 @@ def _cls(x) -> str:
 
 
 def _place(b: dict) -> str:
-    return f"{b['price']:.2f} {book_name(b['book'])}"
+    return f"{price_text(b['price'], b['book'])} {book_name(b['book'])}"
 
 
 def _sel(b: dict) -> str:

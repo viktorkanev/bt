@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import providers as P
 from .core import EventIndex, Quote, parse_time, utcnow
-from .notify import Notifier, alert_link, book_name, format_alert, local_time
+from .notify import Notifier, alert_link, book_name, format_alert, local_time, need_text, price_text
 from .paper import VENUES, FootballDataResults, PaperBook, summarize
 from .rules import Alert, arb_alerts, best_per_pick, pick_alerts, selection_text, value_alerts
 from .state import State
@@ -267,12 +267,12 @@ def render(w: Watcher) -> str:
             live, status = "<span class='muted'>no price for this market</span>", ""
         else:
             line = "" if pk["market"] == "ou" else f" @ line {b['line'] if pk['side'] == 'home' else -b['line']:+.2f}"
-            live = f"{b['price']:.2f} {e(book_name(b['book']))}{line}"
+            live = f"{e(price_text(b['price'], b['book']))} {e(book_name(b['book']))}{line}"
             if b.get("link"):
                 live = f"<a href='{e(b['link'])}' target='_blank' rel='noopener'>{live}</a>"
             ok = b["edge"] >= float(pk.get("min_edge", 0))
             status = (f"<span class='pill ok'>Bet · {_pct(b['edge'])}</span>" if ok else
-                      f"<span class='pill wait'>Wait for {b['need']:.2f}+</span>")
+                      f"<span class='pill wait'>Wait for {e(need_text(b['need'], b['book'], short=True))}</span>")
         prow.append(f"<tr><td class='l'>{e(pk['home'])} – {e(pk['away'])}<div class='muted small'>"
                     f"{e(pk.get('league_name', ''))}</div></td><td class='l'>{e(pk.get('selection', ''))}</td>"
                     f"<td>{live}</td><td>{status}</td></tr>")
@@ -288,11 +288,13 @@ def render(w: Watcher) -> str:
         if a["kind"] == "arb":
             legs = json.loads(a.get("extra") or "{}").get("legs", [])
             sel = "<br>".join(e(f"{selection_text(a['market'], a['line'], lg['outcome'], home, away)} @ "
-                                f"{lg['price']:.2f} {book_name(lg['book'])} ({lg['share']:.0%})") for lg in legs)
+                                f"{price_text(lg['price'], lg['book'])} {book_name(lg['book'])} ({lg['share']:.0%})")
+                             for lg in legs)
             price, fair = "all legs", "–"
         else:
             sel = e(al.selection(home, away))
-            price, fair = f"{a['price']:.2f} {e(book_name(a['book']))}", f"{a['fair_odds']:.2f}"
+            price = f"{e(price_text(a['price'], a['book']))} {e(book_name(a['book']))}"
+            fair = e(price_text(a["fair_odds"], a["book"]))
         arow.append(f"<tr><td class='l'>{e(when)}</td><td class='l'>{kind}</td>"
                     f"<td class='l'>{e(a['match'])}<div class='muted small'>{e(ko)}</div></td>"
                     f"<td class='l'>{sel}</td><td>{price}</td>"

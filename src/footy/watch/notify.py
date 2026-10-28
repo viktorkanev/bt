@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import urllib.error
 import urllib.parse
@@ -24,9 +25,24 @@ def book_name(key: str) -> str:
     return BOOKS.get(key, key)
 
 
+def cents(price: float) -> str:
+    """Decimal odds as the share price Polymarket shows: 2.78 -> "36¢", 1/0.973 -> "97.3¢"."""
+    c = 100 / price
+    return f"{c:.0f}¢" if abs(c - round(c)) < 0.05 else f"{c:.1f}¢"
+
+
 def price_text(price: float, book: str) -> str:
     """Decimal odds, plus the share price for prediction markets (what their site shows)."""
-    return f"{price:.2f} ({100 / price:.0f}¢)" if book == "polymarket" else f"{price:.2f}"
+    return f"{price:.2f} ({cents(price)})" if book == "polymarket" else f"{price:.2f}"
+
+
+def need_text(price: float, book: str, short: bool = False) -> str:
+    """The lowest odds still worth taking ("2.65 or higher"); at Polymarket also the most to pay
+    per share, rounded down so it never overpays ("pay 37.7¢ or less")."""
+    s = f"{price:.2f}+" if short else f"{price:.2f} or higher"
+    if book == "polymarket" and math.isfinite(price) and price > 1:
+        s += f" (pay {math.floor(1000 / price + 1e-9) / 10:g}¢ or less)"
+    return s
 
 
 def local_time(dt, tzname: str) -> str:
@@ -60,7 +76,7 @@ def format_alert(a: Alert, home: str, away: str, tzname: str = "UTC") -> tuple[s
     if a.kind == "value":
         title = f"Wrong odds: {sel} @ {price_text(a.price, a.book)} {book_name(a.book)}"
         body = (f"{a.match} · {when}\n"
-                f"Edge {a.edge:+.1%} · fair price {a.fair_odds:.2f}\n"
+                f"Edge {a.edge:+.1%} · fair price {price_text(a.fair_odds, a.book)}\n"
                 f"Reference: {a.detail}")
     else:
         rule = a.extra.get("rule", "Research")
@@ -69,7 +85,7 @@ def format_alert(a: Alert, home: str, away: str, tzname: str = "UTC") -> tuple[s
             moved = " (line moved; edge recalculated)"
         title = f"Pick ({rule}): {sel} @ {price_text(a.price, a.book)} {book_name(a.book)}"
         body = (f"{a.match} · {when}\n"
-                f"Edge {a.edge:+.1%}{moved} · bet at {a.fair_odds:.2f} or higher\n{a.detail}")
+                f"Edge {a.edge:+.1%}{moved} · bet at {need_text(a.fair_odds, a.book)}\n{a.detail}")
     if a.extra.get("link"):  # e.g. the Polymarket market, one tap away
         body += f"\n{a.extra['link']}"
     return title, body
