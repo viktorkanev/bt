@@ -45,8 +45,26 @@ FULL_PERIODS = {"", "ft", "fulltime", "full time", "full-time", "result", "match
                 "ot", "incl. overtime", "including overtime", "fullgame", "full game", "0"}
 
 
+# OddsPapi marketType codes of the full-match markets we compare (soccer catalogue, 2026-10-28).
+# Other types reuse the same outcome names but settle differently: team totals ("Over Under
+# Team 1"), "2Up" early payout, "To Win From Behind", "To Qualify" (extra time and penalties).
+FULL_MATCH_TYPES = {"1x2": {"1x2"}, "ou": {"totals"}, "ah": {"spreads", "drawnobet"}}
+NOT_MATCH_TYPES = ("teamtotals", "2up", "winfrombehind", "toqualify")
+MAP_VERSION = 2  # bump when the mapping rules change, so market maps cached on disk are rebuilt
+
+
 def map_market(m: dict) -> dict | None:
     """Catalogue entry -> {"market", "line", "outcomes": {outcomeId: our outcome}} or None."""
+    mm = _map_by_names(m)
+    mtype = str(m.get("marketType") or "").lower()
+    if mm is None or not mtype:  # a catalogue without type codes: the names decide
+        return mm
+    if any(t in mtype for t in NOT_MATCH_TYPES):
+        return None
+    return mm if mtype in FULL_MATCH_TYPES.get(mm["market"], {mtype}) else None
+
+
+def _map_by_names(m: dict) -> dict | None:
     name = str(m.get("marketName") or m.get("name") or "").lower()
     mtype = str(m.get("marketType") or "").lower()
     period = str(m.get("period") or "").lower().strip()
@@ -205,7 +223,7 @@ class OddsPapiProvider:
         """marketId -> mapping, built from the catalogue (cached for 30 days)."""
         key = str(sport_id)
         c = self.cache.setdefault("markets", {}).get(key)
-        if not c or time.time() - c.get("at", 0) > 30 * 86400:
+        if not c or c.get("version") != MAP_VERSION or time.time() - c.get("at", 0) > 30 * 86400:
             data = self.get("/markets", sportId=sport_id)
             items = data if isinstance(data, list) else (data or {}).get("markets", []) if isinstance(data, dict) else []
             mapped = {}
@@ -213,7 +231,7 @@ class OddsPapiProvider:
                 mm = map_market(m)
                 if mm:
                     mapped[str(m.get("marketId"))] = mm
-            c = {"at": time.time(), "map": mapped, "total": len(items)}
+            c = {"at": time.time(), "map": mapped, "total": len(items), "version": MAP_VERSION}
             self.cache["markets"][key] = c
             self._save()
         return c["map"]

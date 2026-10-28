@@ -183,6 +183,29 @@ def test_market_catalogue_mapping():
     assert map_market(extras)["market"] == "ml" and map_market(f5) is None
 
 
+def _real(mid, name, mtype, hc, outcomes):
+    """A soccer catalogue entry as OddsPapi's /markets returns it (copied 2026-10-28)."""
+    return {"marketId": mid, "marketName": name, "period": "fulltime", "handicap": hc, "playerProp": False,
+            "marketType": mtype, "marketLength": len(outcomes), "sportId": 10,
+            "outcomes": [{"outcomeId": i, "outcomeName": n} for i, n in outcomes]}
+
+
+def test_only_full_match_markets_are_mapped():
+    # team totals and special "1X2"s share the outcome names of the match markets but settle differently;
+    # mapped as match totals, Team 1's Under 2.5 (~1.5) replaced the match's Under 2.5 (~2.6)
+    keep = [_real(10170, "Over Under Full Time", "totals", 2.25, [(10170, "Over"), (10171, "Under")]),
+            _real(101, "Full Time Result", "1x2", 0.0, [(103, "2"), (101, "1"), (102, "X")]),
+            _real(104, "Draw No Bet", "drawnobet", 0.0, [(104, "1"), (105, "2")])]
+    drop = [_real(10412, "Over Under Team 1", "teamtotals-team1", 2.25, [(10412, "Over"), (10413, "Under")]),
+            _real(10456, "Over Under Team 2", "teamtotals-team2", 2.25, [(10456, "Over"), (10457, "Under")]),
+            _real(10761, "2Up - Full Time Result", "2up", 0.0, [(10762, "X"), (10763, "2"), (10761, "1")]),
+            _real(102050, "To Win From Behind Full Time", "winfrombehind", 0.0,
+                  [(102050, "1"), (102052, "2"), (102051, "X")]),
+            _real(10780, "To Qualify", "toqualify", 0.0, [(10780, "1"), (10781, "2")])]
+    assert [map_market(m)["market"] for m in keep] == ["ou", "1x2", "ah"]
+    assert [map_market(m) for m in drop] == [None] * len(drop)
+
+
 def test_latest_price_shapes():
     assert _latest({"players": {"0": {"price": 2.1, "active": True}}})["price"] == 2.1
     assert _latest({"players": {"0": [{"price": 2.0}, {"price": 2.2, "active": True}]}})["price"] == 2.2
@@ -260,6 +283,23 @@ def test_poll_caches_counts_requests_and_spaces_sweeps(tmp_path, monkeypatch):
     prov2.cache["usage"]["used"] = 250
     with pytest.raises(RuntimeError):
         prov2.get("/sports")
+
+
+def test_market_map_cached_by_older_mapping_rules_is_rebuilt(tmp_path, monkeypatch):
+    calls = []
+
+    def fake(url, data=None, headers=None, timeout=30.0):
+        calls.append(url)
+        return [_real(10412, "Over Under Team 1", "teamtotals-team1", 2.25, [(10412, "Over"), (10413, "Under")]),
+                _real(10170, "Over Under Full Time", "totals", 2.25, [(10170, "Over"), (10171, "Under")])], {}
+    monkeypatch.setattr(P, "http_json", fake)
+    cache = tmp_path / "c.json"
+    stale = {"10412": {"market": "ou", "line": 2.25, "outcomes": {"10412": "over", "10413": "under"}}}
+    cache.write_text(json.dumps({"markets": {"10": {"at": datetime.now().timestamp(), "map": stale, "total": 1}}}))
+    prov = OddsPapiProvider({"api_key": "k", "cache_file": str(cache)})
+    assert set(prov.market_map(10)) == {"10170"} and len(calls) == 1      # team total gone, match total kept
+    assert set(OddsPapiProvider({"api_key": "k", "cache_file": str(cache)}).market_map(10)) == {"10170"}
+    assert len(calls) == 1                                               # and the new map is cached
 
 
 def test_rate_limit_retry_and_missing_key(tmp_path, monkeypatch):
