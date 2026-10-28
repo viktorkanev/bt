@@ -6,6 +6,9 @@ three places, each with its own bankroll:
 * ``best``      the best price among the books you allow (``paper.best_books``)
 * ``pinnacle``  Pinnacle's own price
 * ``betfair``   the Betfair Exchange back price, after commission
+* ``polymarket`` the Polymarket best ask, after the taker fee
+* ``arb``       arbitrages: every outcome backed at the best book, stake split so
+                each result returns the same amount
 
 For each bet we keep the expected value when it was placed (EV), the closing
 line just before kickoff (CLV = our price against the margin-free closing price
@@ -29,13 +32,14 @@ import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from .core import (OUTCOMES, EventIndex, Quote, fit_goals, grid_fair_odds, match_event, name_score, net_odds,
+from .core import (OUTCOMES, EventIndex, Quote, book_net_odds, fit_goals, grid_fair_odds, match_event, name_score,
                    parse_time, profit, score_grid, settle)
 from .rules import Alert, ref_probs
 
 log = logging.getLogger(__name__)
 
-VENUES = {"best": "Best price", "pinnacle": "Pinnacle", "betfair": "Betfair Exchange"}
+VENUES = {"best": "Best price", "pinnacle": "Pinnacle", "betfair": "Betfair Exchange",
+          "polymarket": "Polymarket", "arb": "Arbitrage"}
 STATUS = {1.0: "won", 0.5: "half won", 0.0: "push", -0.5: "half lost", -1.0: "lost"}
 
 SCHEMA = """
@@ -204,11 +208,14 @@ class PaperBook:
     def venue_books(self, venue: str) -> list[str]:
         return list(self.p.get(f"{venue}_books", ["*"]))
 
-    def commission(self, book: str) -> float:
-        return float(self.cfg.get("commission", {}).get(book, 0.0))
+    def net(self, price: float, book: str) -> float:
+        """Odds after the book's commission or fees."""
+        return book_net_odds(price, book, self.cfg)
 
     @staticmethod
     def strategy_of(a: Alert) -> tuple[str, str]:
+        if a.kind == "arb":
+            return "arb", "Arbitrage"
         if a.kind == "value":
             return "value", "Wrong odds"
         code = a.extra.get("rule_code") or "pick"
@@ -216,7 +223,7 @@ class PaperBook:
 
     def strategy_enabled(self, code: str) -> bool:
         allowed = self.p.get("strategies", ["*"])
-        return "*" in allowed or code in allowed or (code != "value" and "picks" in allowed)
+        return "*" in allowed or code in allowed or (code not in ("value", "arb") and "picks" in allowed)
 
     def settled_profit(self, venue: str) -> float:
         with self.lock:
@@ -227,7 +234,7 @@ class PaperBook:
     def stake_for(self, venue: str, a: Alert) -> float:
         if self.p.get("staking", "flat") == "kelly":
             bank = float(self.p["bankroll"]) + self.settled_profit(venue)
-            net = net_odds(a.price, self.commission(a.book))
+            net = self.net(a.price, a.book)
             frac = float(self.p.get("kelly_fraction", 0.25)) * max(a.edge, 0.0) / max(net - 1, 1e-9)
             return round(max(0.0, bank * min(frac, float(self.p.get("max_stake_pct", 0.03)))), 2)
         return float(self.p.get("flat_stake", 10.0))
@@ -243,10 +250,13 @@ class PaperBook:
             code, _ = self.strategy_of(a)
             if self.strategy_enabled(code):
                 groups[(code, a.event_id, a.market, a.outcome)].append(a)
-        placed = []
+        placed = self._place_arbs([a for a in alerts if a.kind == "arb"], index, now)
+        groups = {k: v for k, v in groups.items() if k[0] != "arb"}
         for (code, eid, market, outcome), als in groups.items():
             ev = index.events.get(eid)
             for venue in self.p.get("venues", list(VENUES)):
+                if venue == "arb":
+                    continue
                 books = self.venue_books(venue)
                 cands = [a for a in als if "*" in books or a.book in books]
                 if not cands:
@@ -259,7 +269,7 @@ class PaperBook:
                     "strategy_name": self.strategy_of(a)[1], "venue": venue, "event_id": eid,
                     "home": home, "away": away, "league": a.extra.get("league") or a.league,
                     "kickoff": a.kickoff.isoformat(), "market": market, "line": a.line, "outcome": outcome,
-                    "book": a.book, "price": a.price, "net_price": net_odds(a.price, self.commission(a.book)),
+                    "book": a.book, "price": a.price, "net_price": self.net(a.price, a.book),
                     "fair_odds": a.fair_odds, "ev": a.edge, "stake": self.stake_for(venue, a),
                     "detail": a.detail, "meta": json.dumps(meta)}
                 cols = ",".join(row)
@@ -271,6 +281,41 @@ class PaperBook:
                     placed.append(row)
                     log.info("paper bet [%s/%s] %s v %s %s %s %s @ %.2f %s (EV %+.1f%%)", venue, code, home,
                              away, market, a.line, outcome, a.price, a.book, 100 * a.edge)
+        return placed
+
+    def _place_arbs(self, arbs: list[Alert], index: EventIndex, now: datetime) -> list[dict]:
+        """Every leg of an arbitrage, stakes split so each result returns the same; all legs or none."""
+        if "arb" not in self.p.get("venues", list(VENUES)) or not self.strategy_enabled("arb"):
+            return []
+        min_before = timedelta(minutes=float(self.p.get("min_minutes_before_kickoff", 5)))
+        placed = []
+        for a in sorted(arbs, key=lambda x: -x.edge):
+            if a.kickoff - now < min_before:
+                continue
+            with self.lock:
+                seen = self.db.execute("SELECT 1 FROM paper_bets WHERE strategy='arb' AND event_id=? AND market=?",
+                                       (a.event_id, a.market)).fetchone()
+            if seen:
+                continue
+            ev = index.events.get(a.event_id)
+            home, away = (ev.home, ev.away) if ev else (a.match.split(" v ", 1) + [""])[:2]
+            meta = json.dumps({"sources": dict(ev.sources) if ev else {}, **(ev.meta if ev else {})})
+            total = float(self.p.get("arb_stake", 100.0))
+            rows = [{"placed": now.isoformat(timespec="seconds"), "strategy": "arb", "strategy_name": "Arbitrage",
+                     "venue": "arb", "event_id": a.event_id, "home": home, "away": away, "league": a.league,
+                     "kickoff": a.kickoff.isoformat(), "market": a.market, "line": a.line, "outcome": lg["outcome"],
+                     "book": lg["book"], "price": lg["price"], "net_price": lg["net"], "fair_odds": a.price,
+                     "ev": a.edge, "stake": round(total * lg["share"], 2), "detail": a.detail, "meta": meta}
+                    for lg in a.extra.get("legs", [])]
+            if not rows:
+                continue
+            cols = ",".join(rows[0])
+            with self.lock:
+                self.db.executemany(f"INSERT OR IGNORE INTO paper_bets ({cols}) VALUES ({','.join('?' * len(rows[0]))})",
+                                    [list(r.values()) for r in rows])
+                self.db.commit()
+            placed += rows
+            log.info("paper arbitrage %s %s %s: %+.2f%% (%s)", a.match, a.market, a.line, 100 * a.edge, a.detail)
         return placed
 
     # ---------------------------------------------------------- closing
@@ -314,7 +359,7 @@ class PaperBook:
             books = self.venue_books(b["venue"])
             vq = [q for q in qs if q.market == b["market"] and q.outcome == b["outcome"]
                   and _same_line(q.line, b["line"]) and ("*" in books or q.book in books)]
-            vbest = max(vq, key=lambda q: net_odds(q.price, self.commission(q.book)), default=None)
+            vbest = max(vq, key=lambda q: self.net(q.price, q.book), default=None)
             if fair is None and vbest is None:
                 continue
             key = (round(fair[0], 4) if fair else None, vbest.price if vbest else None)

@@ -14,8 +14,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from .core import OUTCOMES, EventIndex, Quote, ah_break_even, ah_ev, devig, gross_needed, match_event, \
-    net_odds, parse_time, within
+from .core import OUTCOMES, EventIndex, Quote, ah_break_even, ah_ev, book_gross_needed, book_net_odds, devig, \
+    match_event, parse_time, within
 
 
 @dataclass
@@ -46,6 +46,12 @@ class Alert:
 
 
 def selection_text(market: str, line: float | None, outcome: str, home: str = "", away: str = "") -> str:
+    if outcome == "all":  # arbitrage: every outcome of the market
+        if market == "1x2":
+            return "Match result, all three outcomes"
+        if market == "ou":
+            return f"Over/under {line:g}, both sides"
+        return f"Handicap {home} {line:+.2f}, both sides"
     if market == "1x2":
         return {"home": f"{home} to win", "away": f"{away} to win", "draw": "Draw"}[outcome]
     if market == "ou":
@@ -86,7 +92,6 @@ def value_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetim
                  targets: list[str] | None = None) -> list[Alert]:
     """``targets`` overrides the configured target books (paper trading looks at every book)."""
     a = cfg["alerts"]
-    commission = cfg.get("commission", {})
     refs = list(a.get("reference_books", ["pinnacle"]))
     targets = list(targets if targets is not None else a.get("target_books", ["*"]))
     out: list[Alert] = []
@@ -119,12 +124,55 @@ def value_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetim
                     continue
                 if q.size is not None and q.size < a.get("min_exchange_size", 0):
                     continue
-                edge = net_odds(q.price, commission.get(book, 0.0)) * p - 1
+                edge = book_net_odds(q.price, book, cfg) * p - 1
                 if a.get("min_edge", 0.03) <= edge <= a.get("max_edge", 0.25):
                     out.append(Alert("value", eid, f"{ev.home} v {ev.away}", ev.kickoff, ev.league, market, line,
                                      o, book, q.price, 1 / p, edge,
                                      f"{ref_book} {ref_txt} (no-margin {1 / p:.2f})",
                                      {"reference": ref_book}))
+    return out
+
+
+def arb_alerts(index: EventIndex, quotes: list[Quote], cfg: dict, now: datetime) -> list[Alert]:
+    """Arbitrage: the best price for every outcome of a market, taken at different books,
+    returns more than the total stake whatever happens (after commission and fees)."""
+    a = cfg["alerts"]
+    if not a.get("arb_alerts", True):
+        return []
+    allowed = list(a.get("arb_books", ["*"]))
+    max_age = a.get("max_quote_age_minutes", 30)
+    min_size = a.get("min_exchange_size", 0)
+    out: list[Alert] = []
+    for (eid, market, line), books in group_quotes(quotes).items():
+        if market not in a.get("markets", ["1x2", "ou", "ah"]):
+            continue
+        ev = index.events.get(eid)
+        if ev is None or not within(ev.kickoff, now, a.get("min_minutes_before_kickoff", 2),
+                                    a.get("lookahead_hours", 48)):
+            continue
+        best: dict[str, tuple[float, Quote]] = {}
+        for book, outs in books.items():
+            if "*" not in allowed and book not in allowed:
+                continue
+            for o, q in outs.items():
+                if not _fresh(q, now, max_age) or (q.size is not None and q.size < min_size):
+                    continue
+                net = book_net_odds(q.price, book, cfg)
+                if o not in best or net > best[o][0]:
+                    best[o] = (net, q)
+        outcomes = OUTCOMES[market]
+        if not all(o in best for o in outcomes) or len({best[o][1].book for o in outcomes}) < 2:
+            continue
+        inv = sum(1 / best[o][0] for o in outcomes)
+        edge = 1 / inv - 1
+        if not a.get("min_arb", 0.005) <= edge <= a.get("max_arb", 0.10):
+            continue
+        legs = [{"outcome": o, "book": best[o][1].book, "price": best[o][1].price, "net": best[o][0],
+                 "share": (1 / best[o][0]) / inv} for o in outcomes]
+        detail = " · ".join(f"{selection_text(market, line, lg['outcome'], ev.home, ev.away)} @ {lg['price']:.2f} "
+                            f"{lg['book']} ({lg['share']:.0%})" for lg in legs)
+        out.append(Alert("arb", eid, f"{ev.home} v {ev.away}", ev.kickoff, ev.league, market, line, "all",
+                         "multi", round(1 / inv, 4), 0.0, edge, detail, {"legs": legs}))
     return out
 
 
@@ -135,7 +183,6 @@ def pick_alerts(picks: list[dict], index: EventIndex, quotes: list[Quote], cfg: 
     ``books`` overrides the configured pick books (paper trading looks at every book).
     """
     a = cfg["alerts"]
-    commission = cfg.get("commission", {})
     pick_books = list(books if books is not None else a.get("pick_books", ["*"]))
     by_event: dict[str, list[Quote]] = defaultdict(list)
     for q in quotes:
@@ -161,17 +208,16 @@ def pick_alerts(picks: list[dict], index: EventIndex, quotes: list[Quote], cfg: 
                 continue
             if pick_books != ["*"] and q.book not in pick_books:
                 continue
-            c = commission.get(q.book, 0.0)
-            net = net_odds(q.price, c)
+            net = book_net_odds(q.price, q.book, cfg)
             if pk["market"] == "ou":
                 if q.line is None or abs(q.line - float(pk["line"])) > 1e-9:
                     continue
                 p = float(pk["prob"])
-                edge, need = p * net - 1, gross_needed((1 + need_edge) / p, c)
+                edge, need = p * net - 1, book_gross_needed((1 + need_edge) / p, q.book, cfg)
             elif pk["market"] == "ah":
                 gd = {int(k): float(v) for k, v in pk["gd_dist"].items()}
                 edge = ah_ev(gd, q.line, q.outcome, net)
-                need = gross_needed(ah_break_even(gd, q.line, q.outcome, need_edge), c)
+                need = book_gross_needed(ah_break_even(gd, q.line, q.outcome, need_edge), q.book, cfg)
             else:
                 continue
             cand = {"book": q.book, "price": q.price, "line": q.line, "edge": edge, "need": need}

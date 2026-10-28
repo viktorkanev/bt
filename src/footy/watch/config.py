@@ -39,7 +39,11 @@ DEFAULTS: dict = {
         "lookahead_hours": 36, "min_minutes_before_kickoff": 2,
         "max_quote_age_minutes": 30, "max_exchange_spread": 0.05, "min_exchange_size": 20,
         "cooldown_minutes": 240, "reprice_step": 0.01, "value_alerts": True, "pick_alerts": True,
+        # arbitrage: back every outcome of a market at different books for a locked-in profit
+        "arb_alerts": True, "arb_books": ["*"], "min_arb": 0.005, "max_arb": 0.10,
     },
+    # prediction-market taker fee: rate * p * (1 - p) per share bought at price p
+    "fees": {"polymarket": 0.05},
     "commission": {"betfair_ex_eu": 0.05, "betfair_ex_uk": 0.05, "betfair_ex_au": 0.05,
                    "betfair": 0.05, "matchbook": 0.02, "smarkets": 0.02},
     "oddsapi": {"enabled": False, "api_key": "", "regions": "eu", "markets": ["h2h", "totals", "spreads"],
@@ -47,6 +51,9 @@ DEFAULTS: dict = {
                 "lookahead_hours": 36, "events_refresh_minutes": 60, "sports": ODDSAPI_SPORTS},
     "betfair": {"enabled": False, "app_key": "", "username": "", "password": "", "interval_seconds": 30,
                 "lookahead_hours": 36, "competitions": [], "catalogue_refresh_minutes": 15},
+    "polymarket": {"enabled": False, "sports": [], "series_ids": [], "soccer_tag": "100350",
+                   "markets": ["moneyline", "totals", "spreads"], "interval_seconds": 60,
+                   "lookahead_hours": 36, "catalogue_refresh_minutes": 15},
     "file": {"enabled": False, "path": "odds.json", "interval_seconds": 30},
     "notify": {"console": True, "telegram_token": "", "telegram_chat_id": "", "ntfy_topic": "",
                "ntfy_server": "https://ntfy.sh"},
@@ -56,11 +63,13 @@ DEFAULTS: dict = {
         "staking": "flat",              # "flat" or "kelly"
         "flat_stake": 10.0,
         "kelly_fraction": 0.25, "max_stake_pct": 0.03,
-        "venues": ["best", "pinnacle", "betfair"],
+        "venues": ["best", "pinnacle", "betfair", "polymarket", "arb"],  # feeds you don't use are skipped
         "strategies": ["*"],            # "*", or a list like ["value", "F1", "F2"]
         "best_books": ["*"],            # books counted for "best price" (e.g. only ones you can use)
         "pinnacle_books": ["pinnacle"],
         "betfair_books": ["betfair_ex_eu", "betfair_ex_uk", "betfair"],
+        "polymarket_books": ["polymarket"],
+        "arb_stake": 100.0,              # total stake per arbitrage, split across its legs
         "min_minutes_before_kickoff": 5,
         "closing_snapshot_minutes": 10,  # the-odds-api: one extra call per match just before kickoff
         "settle_after_minutes": 135, "settle_every_minutes": 60, "void_after_days": 7,

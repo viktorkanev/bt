@@ -121,12 +121,15 @@ Two kinds of alert:
   handicaps), re-priced against the live odds, at any handicap line on offer.
 
 Feeds: The Odds API (Pinnacle, Betfair Exchange and others; free tier 500
-credits a month) and the Betfair Exchange API (free delayed key). There is also
-a file feed for testing.
+credits a month), the Betfair Exchange API (free delayed key) and Polymarket
+(free, no key; its taker fee is included). There is also a file feed for testing.
+
+A third alert type, **arbitrage**, fires when backing every outcome of a market at
+the best prices across all books returns more than the stake, whatever the result.
 
 **Paper trading** (`/paper`): every alert also becomes an imaginary bet, recorded
-at the best price, at Pinnacle and at the Betfair Exchange, each with its own
-bankroll. It tracks EV when bet, closing-line value and results, and charts
+at the best price, at Pinnacle, at the Betfair Exchange and at Polymarket, each with
+its own bankroll, plus one for arbitrages. It tracks EV when bet, closing-line value and results, and charts
 actual against expected profit, so you can see whether the alerts make money
 before staking anything.
 

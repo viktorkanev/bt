@@ -21,7 +21,12 @@ produces the picks and `footy push-picks` sends them to the Pi.
 |---|---|---|
 | [The Odds API](https://the-odds-api.com) | Pinnacle, Betfair Exchange and many other books in one call (region `eu`) | Free: 500 credits/month (enough to try it). Paid plans for real tracking |
 | [Betfair Exchange API](https://developer.betfair.com) | Exchange back/lay prices and liquidity | Free delayed key (prices 1-180 s late); live key is a one-off £299 |
+| [Polymarket](https://polymarket.com) | Football match winner, totals and spreads from the order book (best ask, best bid, money available) | Free, no key. Taker fee about 0.05 x p x (1-p) per share; limit (maker) orders pay none |
 | Your own script | Anything that writes `odds.json` (see the `file` provider) | - |
+
+Kalshi is not included: its member agreement lists Bulgaria among the countries
+whose residents may not trade. Polymarket's own restricted list did not include
+Bulgaria when this was written; check it before depositing.
 
 Pinnacle closed its public API in July 2025; The Odds API is the simplest way to
 see its prices. BetInAsia's BLACK platform runs on Mollybet, which has an API for
@@ -135,3 +140,32 @@ line predicted, with a shaded luck range. How to read it:
 
 `/api/paper.csv` downloads every bet. `python3 -m footy.watch paper-reset --yes`
 starts the bankrolls again.
+
+## 7. Polymarket and arbitrage
+
+Turn on `[polymarket]` and its prices join everything else: "wrong odds" alerts
+when a Polymarket share is cheaper than Pinnacle's no-margin price (after the taker
+fee), research picks priced at Polymarket, and a separate Polymarket bankroll on
+the paper-trading page. `python3 -m footy.watch polymarket` lists its leagues and
+the next matches it can see.
+
+A Polymarket price of 40c is decimal odds 1/0.40 = 2.50 before the fee. The fee
+for takers is `rate x p x (1-p)` per share (about 1.2c at 50c with the 0.05
+rate), so the alerts use 1/(0.40 + 0.012) = 2.43. Check the fee shown on the
+market and set `fees.polymarket` to match.
+
+**Arbitrage alerts** look at every book together. When backing all outcomes of
+a market at the best prices (after commission and fees) costs less than the
+payout, you get an alert with the stake split. Example: Arsenal at Polymarket 40c,
+draw at Polymarket 24c, Chelsea 3.50 at Pinnacle is a 5.6% locked-in return.
+Things to know:
+
+* Set `arb_books` to the books you can use, or most arbs will be at books you can't reach.
+* Place the least liquid leg first (usually Polymarket or a soft book), then the rest.
+* Prices move. An arb that is only half placed is a normal bet.
+* Soft bookmakers limit accounts that arb. Pinnacle, Betfair and Polymarket don't
+  limit winners, so arbs between them are the ones that last.
+
+Paper trading records each arbitrage in its own "Arbitrage" bankroll (default
+€100 split across the legs), so you can see how often they appear and what they
+would have made.

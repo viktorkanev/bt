@@ -1,4 +1,4 @@
-"""python -m footy.watch {run,check,sports,notify-test,init-config,push,paper,paper-reset}"""
+"""python -m footy.watch {run,check,sports,polymarket,notify-test,init-config,push,paper,paper-reset}"""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     for name, hlp in (("run", "poll, alert and serve the status page"),
                       ("check", "poll every provider once and print what it found (no notifications)"),
                       ("sports", "list the-odds-api soccer sport keys available to your key"),
+                      ("polymarket", "list Polymarket sports and series ids (football marked) and test the feed"),
                       ("notify-test", "send a test notification"),
                       ("paper", "paper-trading results by place and strategy"),
                       ("paper-reset", "delete all paper bets and start the imaginary bankrolls again")):
@@ -61,6 +62,22 @@ def main(argv: list[str] | None = None) -> int:
             mapped = cfg["oddsapi"]["sports"].get(s["key"], "")
             print(f"{s['key']:<45} {s.get('title', ''):<35} {'active' if s.get('active') else '':<7} {mapped}")
         print(f"credits remaining: {prov.remaining}")
+        return 0
+    if args.cmd == "polymarket":
+        from .core import EventIndex
+        from .providers import PolymarketProvider
+        prov = PolymarketProvider(cfg["polymarket"])
+        for sp in prov.list_sports():
+            mark = "football" if prov.is_soccer(sp) else ""
+            print(f"{str(sp.get('sport', '')):<12} series {str(sp.get('series', '')):<14} {mark:<9} "
+                  f"tags {sp.get('tags', '')}")
+        idx = EventIndex()
+        qs = prov.poll(idx)
+        print(f"\n{len(idx.events)} football matches in the next {prov.lookahead_h:g} h, {len(qs)} prices")
+        for ev in sorted(idx.events.values(), key=lambda x: x.kickoff)[:15]:
+            mine = sorted((q for q in qs if q.event == ev.id and q.market == "1x2"), key=lambda q: q.outcome)
+            print(f"  {ev.kickoff:%a %d %b %H:%M}  {ev.home} v {ev.away}  " +
+                  "  ".join(f"{q.outcome} {1 / q.price:.2f}" for q in mine))
         return 0
     if args.cmd in ("paper", "paper-reset"):
         from .paper import VENUES, PaperBook, summarize

@@ -5,6 +5,8 @@
   the events list is used for scheduling.
 * :class:`BetfairProvider`  Betfair Exchange API-NG (needs an app key; the free
   delayed key returns prices 1-180 s late, a live key is a one-off fee).
+* :class:`PolymarketProvider`  Polymarket football markets (public APIs, no key):
+  match winner, totals and spreads, priced at the best ask of each outcome share.
 * :class:`FileProvider`     replays a JSON snapshot (tests, demos, or a feed
   written by another tool, e.g. a BetInAsia/Mollybet script).
 
@@ -16,13 +18,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
-from .core import EventIndex, Quote, parse_time, utcnow
+from .core import EventIndex, Quote, match_event, name_score, parse_time, utcnow
 
 log = logging.getLogger(__name__)
 UA = {"User-Agent": "footy-watch/0.1"}
@@ -389,7 +392,219 @@ class FileProvider:
                 for r in data.get("results", [])]
 
 
-PROVIDERS = {"oddsapi": OddsAPIProvider, "betfair": BetfairProvider, "file": FileProvider}
+# --------------------------------------------------------------- Polymarket
+def _jlist(v) -> list:
+    """Gamma returns lists such as outcomes and clobTokenIds as JSON-encoded strings."""
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str) and v.strip().startswith("["):
+        try:
+            return json.loads(v)
+        except ValueError:
+            return []
+    return []
+
+
+def _pm_time(s) -> datetime | None:
+    if not s:
+        return None
+    s = str(s).strip().replace(" ", "T", 1)
+    s = re.sub(r"([+-]\d\d)$", r"\1:00", s)  # "+00" -> "+00:00"
+    try:
+        return parse_time(s)
+    except ValueError:
+        return None
+
+
+class PolymarketProvider:
+    """Polymarket football markets through the public Gamma (catalogue) and CLOB (order book) APIs.
+
+    Each outcome is a share paying $1; buying at the best ask ``p`` is decimal odds
+    ``1/p`` before the taker fee (``fees.polymarket`` in the config). The best bid
+    gives the lay side, and the money at the best ask is the available size.
+    """
+
+    name = "polymarket"
+    GAMMA = "https://gamma-api.polymarket.com"
+    CLOB = "https://clob.polymarket.com"
+
+    def __init__(self, cfg: dict):
+        self.book = cfg.get("book_name", "polymarket")
+        self.sports = [str(x) for x in cfg.get("sports", [])]          # codes from /sports; [] = all football
+        self.series_ids = [str(x) for x in cfg.get("series_ids", [])]  # explicit override
+        self.soccer_tag = str(cfg.get("soccer_tag", "100350"))
+        self.markets = set(cfg.get("markets", ["moneyline", "totals", "spreads"]))
+        self.lookahead_h = float(cfg.get("lookahead_hours", 36))
+        self.min_interval = float(cfg.get("interval_seconds", 60))
+        self.catalogue_refresh_s = float(cfg.get("catalogue_refresh_minutes", 15)) * 60
+        self._series: list[str] = []
+        self._series_at = 0.0
+        self._events: list[dict] = []
+        self._events_at = 0.0
+        self.last_error = ""
+
+    def interval(self, n: int = 0, now: datetime | None = None) -> float:
+        return self.min_interval
+
+    def list_sports(self) -> list[dict]:
+        data, _ = http_json(f"{self.GAMMA}/sports")
+        return data if isinstance(data, list) else []
+
+    def is_soccer(self, s: dict) -> bool:
+        if self.sports:
+            return str(s.get("sport", "")) in self.sports
+        return self.soccer_tag in {t.strip() for t in str(s.get("tags", "")).split(",")}
+
+    def football_series(self) -> list[str]:
+        if self.series_ids:
+            return self.series_ids
+        if self._series and time.time() - self._series_at < 24 * 3600:
+            return self._series
+        out = []
+        for s in self.list_sports():
+            if self.is_soccer(s):
+                out += [x.strip() for x in str(s.get("series", "")).split(",") if x.strip()]
+        self._series, self._series_at = sorted(set(out)), time.time()
+        return self._series
+
+    def _refresh_events(self, now: datetime) -> None:
+        if self._events and time.time() - self._events_at < self.catalogue_refresh_s:
+            return
+        evs: list[dict] = []
+        for sid in self.football_series():
+            offset = 0
+            while offset < 2000:
+                url = f"{self.GAMMA}/events?" + urllib.parse.urlencode(
+                    {"series_id": sid, "active": "true", "closed": "false", "limit": 100, "offset": offset})
+                try:
+                    data, _ = http_json(url)
+                except Exception as e:  # noqa: BLE001
+                    self.last_error = f"events series {sid}: {e}"
+                    log.warning(self.last_error)
+                    break
+                batch = data if isinstance(data, list) else (data or {}).get("data", [])
+                evs += batch
+                if len(batch) < 100:
+                    break
+                offset += 100
+        lo, hi = now - timedelta(hours=3), now + timedelta(hours=self.lookahead_h)
+        self._events = [e for e in evs if (ko := self.kickoff(e)) is not None and lo <= ko <= hi]
+        self._events_at = time.time()
+
+    def poll(self, index: EventIndex, now: datetime | None = None) -> list[Quote]:
+        now = now or utcnow()
+        self._refresh_events(now)
+        tokens = sorted({str(t) for e in self._events for m in e.get("markets", [])
+                         for t in _jlist(m.get("clobTokenIds"))})
+        books: dict[str, dict] = {}
+        for i in range(0, len(tokens), 400):  # the API takes up to 500 per call
+            data, _ = http_json(f"{self.CLOB}/books", json.dumps([{"token_id": t} for t in tokens[i:i + 400]]).encode(),
+                                {"Content-Type": "application/json"})
+            for b in data or []:
+                books[str(b.get("asset_id"))] = b
+        return self.parse(self._events, books, index, self.book, now, self.markets)
+
+    # ------------------------------------------------------------ parsing
+    @staticmethod
+    def kickoff(e: dict) -> datetime | None:
+        for m in e.get("markets", []):
+            if m.get("gameStartTime"):
+                return _pm_time(m["gameStartTime"])
+        return _pm_time(e.get("startTime") or e.get("eventDate") or e.get("endDate"))
+
+    @staticmethod
+    def teams(e: dict) -> tuple[str, str] | None:
+        m = re.match(r"^(.+?)\s+(?:vs\.?|v)\s+(.+?)(?:\s+-\s+.*)?$", str(e.get("title", "")).strip(), re.I)
+        return (m.group(1).strip(), m.group(2).strip()) if m else None
+
+    @staticmethod
+    def legs(m: dict, home: str, away: str, markets: set) -> list[tuple]:
+        """(market, line, outcome, token) for every outcome share we can map."""
+        outcomes = [str(o) for o in _jlist(m.get("outcomes"))]
+        tokens = [str(t) for t in _jlist(m.get("clobTokenIds"))]
+        if not tokens or len(outcomes) != len(tokens):
+            return []
+        low = [o.lower() for o in outcomes]
+        smt = str(m.get("sportsMarketType") or "").lower()
+        q, title = str(m.get("question") or ""), str(m.get("groupItemTitle") or "")
+        if low == ["yes", "no"] and "moneyline" in markets and (
+                smt == "moneyline" or re.match(r"^will .+ (win|end in a draw)", q, re.I)):
+            yes = tokens[0]
+            if re.search(r"\bdraw\b|\btie\b", f"{title} {q}", re.I):
+                return [("1x2", None, "draw", yes)]
+            team = title or re.sub(r"^will (.+?) win.*$", r"\1", q, flags=re.I)
+            sh, sa = name_score(team, home), name_score(team, away)
+            if max(sh, sa) < 0.6:
+                return []
+            return [("1x2", None, "home" if sh >= sa else "away", yes)]
+        if low == ["over", "under"] and "totals" in markets and smt in ("totals", ""):
+            line = m.get("line")
+            if line in (None, ""):
+                mm = re.search(r"(\d+(?:\.\d+)?)", q)
+                line = mm.group(1) if mm else None
+            if line in (None, ""):
+                return []
+            return [("ou", float(line), "over", tokens[0]), ("ou", float(line), "under", tokens[1])]
+        if smt == "spreads" and "spreads" in markets and len(outcomes) == 2:
+            mm = re.search(r"(?:spread:\s*)?(.+?)\s*\(([+-]?\d+(?:\.\d+)?)\)", q, re.I)
+            team, val = (mm.group(1), float(mm.group(2))) if mm else (outcomes[0], m.get("line"))
+            if val in (None, ""):
+                return []
+            team_is_home = name_score(team, home) >= name_score(team, away)
+            home_line = float(val) if team_is_home else -float(val)
+            first_home = name_score(outcomes[0], home) >= name_score(outcomes[0], away)
+            th, ta = (tokens[0], tokens[1]) if first_home else (tokens[1], tokens[0])
+            return [("ah", home_line, "home", th), ("ah", home_line, "away", ta)]
+        return []
+
+    @classmethod
+    def parse(cls, events: list[dict], books: dict[str, dict], index: EventIndex, book: str = "polymarket",
+              now: datetime | None = None, markets: set | None = None) -> list[Quote]:
+        now = now or utcnow()
+        markets = markets or {"moneyline", "totals", "spreads"}
+        out: list[Quote] = []
+        for e in events:
+            teams, ko = cls.teams(e), cls.kickoff(e)
+            if not teams or ko is None:
+                continue
+            home, away = teams
+            # follow another feed's home/away order if it lists the match the other way round
+            if match_event(home, away, ko, index.events.values()) is None and \
+                    match_event(away, home, ko, index.events.values()) is not None:
+                home, away = away, home
+            ev = index.add(cls.name, str(e.get("id")), home, away, ko)
+            for m in e.get("markets", []):
+                if m.get("closed") or m.get("active") is False or m.get("acceptingOrders") is False:
+                    continue
+                for market, line, outcome, token in cls.legs(m, ev.home, ev.away, markets):
+                    q = cls._quote(ev.id, market, line, outcome, token, books.get(token), m, book, now)
+                    if q:
+                        out.append(q)
+        return out
+
+    @staticmethod
+    def _quote(eid, market, line, outcome, token, b, m, book, now) -> Quote | None:
+        ask = bid = size = None
+        upd = now
+        if b:
+            asks = [(float(x["price"]), float(x["size"])) for x in b.get("asks", []) if float(x.get("size", 0)) > 0]
+            bids = [(float(x["price"]), float(x["size"])) for x in b.get("bids", []) if float(x.get("size", 0)) > 0]
+            if asks:
+                ask = min(p for p, _ in asks)
+                size = round(sum(s for p, s in asks if p == ask) * ask, 2)  # dollars at the best ask
+            if bids:
+                bid = max(p for p, _ in bids)
+            # the book is a live snapshot of resting orders, so it is as fresh as this poll
+        elif token == str(_jlist(m.get("clobTokenIds"))[0]):  # no book: Gamma's summary covers the first outcome
+            ask, bid = m.get("bestAsk"), m.get("bestBid")
+        if not ask or not 0 < float(ask) < 1:
+            return None
+        lay = 1 / float(bid) if bid and 0 < float(bid) < 1 else None
+        return Quote(eid, market, line, outcome, book, 1 / float(ask), upd, lay, size)
+
+
+PROVIDERS = {"oddsapi": OddsAPIProvider, "betfair": BetfairProvider, "polymarket": PolymarketProvider,
+             "file": FileProvider}
 
 
 def build(cfg: dict) -> list:

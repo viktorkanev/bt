@@ -151,6 +151,7 @@ def test_undelivered_alert_is_sent_again_on_the_next_sweep(services, tmp_path):
     cfg = C.load(None)
     cfg["server"].update({"db": str(tmp_path / "w.db"), "picks_file": str(tmp_path / "picks.json")})
     cfg["paper"]["enabled"] = False
+    cfg["alerts"]["arb_alerts"] = False      # these prices are also an arbitrage; this test is about one alert
     cfg["notify"] = _notify_cfg(fake, ntfy=False)
     w = Watcher(cfg, provider_list=[])
     w.notifier = Notifier(cfg["notify"], sleep=clock.sleep, clock=clock.now)

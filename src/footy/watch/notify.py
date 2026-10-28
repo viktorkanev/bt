@@ -16,11 +16,17 @@ log = logging.getLogger(__name__)
 BOOKS = {"pinnacle": "Pinnacle", "betfair_ex_eu": "Betfair Exchange", "betfair_ex_uk": "Betfair Exchange",
          "betfair": "Betfair Exchange", "matchbook": "Matchbook", "smarkets": "Smarkets",
          "williamhill": "William Hill", "onexbet": "1xBet", "marathonbet": "Marathonbet",
-         "unibet_eu": "Unibet", "sport888": "888sport", "betsson": "Betsson", "nordicbet": "NordicBet"}
+         "unibet_eu": "Unibet", "sport888": "888sport", "betsson": "Betsson", "nordicbet": "NordicBet",
+         "polymarket": "Polymarket"}
 
 
 def book_name(key: str) -> str:
     return BOOKS.get(key, key)
+
+
+def price_text(price: float, book: str) -> str:
+    """Decimal odds, plus the share price for prediction markets (what their site shows)."""
+    return f"{price:.2f} ({100 / price:.0f}¢)" if book == "polymarket" else f"{price:.2f}"
 
 
 def local_time(dt, tzname: str) -> str:
@@ -36,8 +42,18 @@ def format_alert(a: Alert, home: str, away: str, tzname: str = "UTC") -> tuple[s
     """(title, body) in plain words."""
     sel = a.selection(home, away)
     when = local_time(a.kickoff, tzname)
+    if a.kind == "arb":
+        from .rules import selection_text
+        title = f"Arbitrage {a.edge:+.1%}: {a.match}"
+        legs = "\n".join(f"{selection_text(a.market, a.line, lg['outcome'], home, away)} @ "
+                         f"{price_text(lg['price'], lg['book'])} "
+                         f"{book_name(lg['book'])} · {lg['share']:.0%} of stake" for lg in a.extra.get("legs", []))
+        body = (f"{sel} · {when}\n{legs}\n"
+                f"Locked-in return {a.edge:+.1%} if every leg is matched at these prices. Place the "
+                f"least liquid leg first.")
+        return title, body
     if a.kind == "value":
-        title = f"Wrong odds: {sel} @ {a.price:.2f} ({book_name(a.book)})"
+        title = f"Wrong odds: {sel} @ {price_text(a.price, a.book)} {book_name(a.book)}"
         body = (f"{a.match} · {when}\n"
                 f"Edge {a.edge:+.1%} · fair price {a.fair_odds:.2f}\n"
                 f"Reference: {a.detail}")
@@ -46,7 +62,7 @@ def format_alert(a: Alert, home: str, away: str, tzname: str = "UTC") -> tuple[s
         moved = ""
         if a.market == "ah" and a.extra.get("pick_line") is not None and a.line != a.extra["pick_line"]:
             moved = " (line moved; edge recalculated)"
-        title = f"Pick ({rule}): {sel} @ {a.price:.2f} ({book_name(a.book)})"
+        title = f"Pick ({rule}): {sel} @ {price_text(a.price, a.book)} {book_name(a.book)}"
         body = (f"{a.match} · {when}\n"
                 f"Edge {a.edge:+.1%}{moved} · bet at {a.fair_odds:.2f} or higher\n{a.detail}")
     return title, body

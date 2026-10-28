@@ -27,6 +27,12 @@ max_quote_age_minutes = 30
 min_exchange_size = 20    # ignore exchange prices with less money available
 cooldown_minutes = 240    # repeat an alert only after this, or if the edge grows by reprice_step
 reprice_step = 0.01
+# Arbitrage: the best price for every outcome, spread over books, returns more than the stake
+# whatever the result. List only books you can use, or most arbs will be at books you can't reach.
+arb_alerts = true
+arb_books = ["*"]         # e.g. ["pinnacle", "betfair_ex_eu", "polymarket"]
+min_arb = 0.005           # 0.5% locked in, after commission and fees
+max_arb = 0.10            # bigger ones are almost always stale prices
 
 [commission]              # on net winnings
 betfair_ex_eu = 0.05
@@ -50,6 +56,14 @@ username = ""
 password = ""
 interval_seconds = 30
 competitions = []         # Betfair competition ids; empty = all football in lookahead
+
+[polymarket]              # Polymarket football markets: public data, no key needed
+enabled = false           # check what's listed with: python3 -m footy.watch polymarket
+sports = []               # sport codes from that list; empty = every football league
+interval_seconds = 60
+
+[fees]                    # prediction-market taker fee: rate * p * (1 - p) per share at price p
+polymarket = 0.05         # check the fee shown on the market; resting limit (maker) orders pay none
 
 [file]                    # read odds from a JSON file written by another program
 enabled = false
@@ -76,7 +90,8 @@ staking = "flat"          # "flat" or "kelly"
 flat_stake = 10
 kelly_fraction = 0.25     # used when staking = "kelly"
 max_stake_pct = 0.03
-venues = ["best", "pinnacle", "betfair"]
+venues = ["best", "pinnacle", "betfair", "polymarket", "arb"]   # feeds you don't use are skipped
+arb_stake = 100           # total stake per arbitrage, split across its legs
 strategies = ["*"]        # or e.g. ["F1", "F2"] to leave out the "wrong odds" bets
 best_books = ["*"]        # limit "best price" to books you can use, e.g. ["pinnacle", "betfair_ex_eu", "sport888"]
 closing_snapshot_minutes = 10   # the-odds-api: one extra request per match ~10 min before kickoff (3 credits)

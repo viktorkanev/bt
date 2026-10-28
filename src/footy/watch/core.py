@@ -74,6 +74,33 @@ def gross_needed(net: float, commission: float = 0.0) -> float:
     return 1 + (net - 1) / (1 - commission)
 
 
+def book_net_odds(price: float, book: str, cfg: dict) -> float:
+    """Decimal odds you really get at ``book``.
+
+    Exchanges charge commission on winnings (``cfg["commission"]``). Prediction
+    markets such as Polymarket charge takers ``rate * p * (1 - p)`` per share
+    bought at price ``p`` (``cfg["fees"]``), so a share costs ``p + fee``.
+    """
+    rate = float(cfg.get("fees", {}).get(book, 0.0) or 0.0)
+    if rate:
+        p = 1.0 / price
+        return 1.0 / (p + rate * p * (1 - p))
+    return net_odds(price, float(cfg.get("commission", {}).get(book, 0.0) or 0.0))
+
+
+def book_gross_needed(net: float, book: str, cfg: dict) -> float:
+    """Quoted price needed at ``book`` to get ``net`` odds after its fees."""
+    if not math.isfinite(net):
+        return net
+    rate = float(cfg.get("fees", {}).get(book, 0.0) or 0.0)
+    if rate:
+        # solve p + rate*p*(1-p) = 1/net for the share price p
+        a, b, c = rate, -(1 + rate), 1.0 / net
+        p = (-b - math.sqrt(b * b - 4 * a * c)) / (2 * a)
+        return 1.0 / p
+    return gross_needed(net, float(cfg.get("commission", {}).get(book, 0.0) or 0.0))
+
+
 # ------------------------------------------------------------ settlement
 def _sign(x: float) -> float:
     return 1.0 if x > 1e-9 else -1.0 if x < -1e-9 else 0.0

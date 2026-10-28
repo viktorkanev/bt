@@ -20,7 +20,7 @@ from . import providers as P
 from .core import EventIndex, Quote, parse_time, utcnow
 from .notify import Notifier, book_name, format_alert, local_time
 from .paper import VENUES, FootballDataResults, PaperBook, summarize
-from .rules import Alert, best_per_pick, pick_alerts, value_alerts
+from .rules import Alert, arb_alerts, best_per_pick, pick_alerts, selection_text, value_alerts
 from .state import State
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,11 @@ class Watcher:
         self.started = utcnow()
         self.lock = threading.Lock()
         pp = cfg.get("paper", {})
+        names = {p.name for p in self.providers}
+        if pp:  # no tab for a place we get no prices from
+            pp["venues"] = [v for v in pp.get("venues", list(VENUES)) if
+                            (v != "polymarket" or "polymarket" in names) and
+                            (v != "arb" or cfg["alerts"].get("arb_alerts", True))]
         self.paper = PaperBook(cfg["server"]["db"], cfg) if pp.get("enabled") else None
         self.result_sources = [p for p in self.providers if hasattr(p, "results")]
         if self.paper and pp.get("football_data_results", True):
@@ -146,13 +151,15 @@ class Watcher:
         if a.get("pick_alerts", True) and self.picks:
             pa, self.pick_status = pick_alerts(self.picks, self.index, quotes, self.cfg, now)
             alerts += pa
+        arbs = arb_alerts(self.index, quotes, self.cfg, now)
+        alerts += arbs
         if self.paper:
             try:  # paper trading looks at every book, whatever the notification filters say
                 pal = value_alerts(self.index, quotes, self.cfg, now, targets=["*"]) \
                     if self.paper.strategy_enabled("value") else []
                 if self.picks:
                     pal += pick_alerts(self.picks, self.index, quotes, self.cfg, now, books=["*"])[0]
-                self.paper.place(pal, self.index, now)
+                self.paper.place(pal + arbs, self.index, now)
                 self.paper.update_closing(self.index, quotes, now)
             except Exception as e:  # noqa: BLE001
                 log.exception("paper trading step failed: %s", e)
@@ -162,7 +169,7 @@ class Watcher:
             if self.state.should_send(al, now, a.get("cooldown_minutes", 240), a.get("reprice_step", 0.01)):
                 ev = self.index.events[al.event_id]
                 title, body = format_alert(al, ev.home, ev.away, tz)
-                if self.notifier.send(title, body, "high" if al.kind == "pick" else "default"):
+                if self.notifier.send(title, body, "high" if al.kind in ("pick", "arb") else "default"):
                     self.state.record(al, now)  # undelivered alerts are tried again next time
                     sent.append(al)
         self.state.prune(now - timedelta(days=7))
@@ -273,10 +280,19 @@ def render(w: Watcher) -> str:
         al = Alert(a["kind"], "", a["match"], datetime.fromisoformat(a["kickoff"]), a["league"], a["market"],
                    a["line"], a["outcome"], a["book"], a["price"], a["fair_odds"], a["edge"])
         home, away = (a["match"].split(" v ", 1) + [""])[:2]
-        arow.append(f"<tr><td class='l'>{e(when)}</td><td class='l'>{'Pick' if a['kind'] == 'pick' else 'Wrong odds'}</td>"
+        kind = {"pick": "Pick", "arb": "Arbitrage"}.get(a["kind"], "Wrong odds")
+        if a["kind"] == "arb":
+            legs = json.loads(a.get("extra") or "{}").get("legs", [])
+            sel = "<br>".join(e(f"{selection_text(a['market'], a['line'], lg['outcome'], home, away)} @ "
+                                f"{lg['price']:.2f} {book_name(lg['book'])} ({lg['share']:.0%})") for lg in legs)
+            price, fair = "all legs", "–"
+        else:
+            sel = e(al.selection(home, away))
+            price, fair = f"{a['price']:.2f} {e(book_name(a['book']))}", f"{a['fair_odds']:.2f}"
+        arow.append(f"<tr><td class='l'>{e(when)}</td><td class='l'>{kind}</td>"
                     f"<td class='l'>{e(a['match'])}<div class='muted small'>{e(ko)}</div></td>"
-                    f"<td class='l'>{e(al.selection(home, away))}</td><td>{a['price']:.2f} {e(book_name(a['book']))}</td>"
-                    f"<td>{a['fair_odds']:.2f}</td><td><b>{_pct(a['edge'])}</b></td></tr>")
+                    f"<td class='l'>{sel}</td><td>{price}</td>"
+                    f"<td>{fair}</td><td><b>{_pct(a['edge'])}</b></td></tr>")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta http-equiv="refresh" content="30">
 <title>Odds Watch</title><style>{CSS}</style></head><body><div class="wrap">

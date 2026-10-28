@@ -200,11 +200,15 @@ def test_paper_page_and_exports(tmp_path):
     cfg["notify"]["console"] = False
     w = Watcher(cfg)
     w.poll_once(NOW)                                   # places the bets
-    assert {b["venue"] for b in w.paper.bets()} == {"best", "betfair"}
+    # sport888 2.30 / Pinnacle 3.60 / 4.00 is also a 3.9% arbitrage
+    assert {b["venue"] for b in w.paper.bets()} == {"best", "betfair", "arb"}
     w.next_poll = {k: 0 for k in w.next_poll}
     w.next_settle = 0
     w.poll_once(KO + timedelta(hours=3))               # result in the file -> settled (draw: home bets lose)
-    assert all(b["status"] == "lost" for b in w.paper.bets() if b["market"] == "1x2")
+    assert all(b["status"] == "lost" for b in w.paper.bets() if b["market"] == "1x2" and b["venue"] != "arb")
+    arb = w.paper.bets(venue="arb")
+    assert len(arb) == 3 and abs(sum(b["stake"] for b in arb) - 100) < 0.05
+    assert 3.0 < sum(b["profit"] for b in arb) < 4.5      # ~3.9% locked in, whatever the score
     srv = serve(w)
     base = f"http://127.0.0.1:{srv.server_address[1]}"
     try:
