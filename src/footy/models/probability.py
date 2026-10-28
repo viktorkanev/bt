@@ -216,6 +216,7 @@ def fit_final(d: pd.DataFrame, train_years: int = 12, use_gbm: bool = True) -> d
         out["gbm"] = make_gbm().fit(X[tr].to_numpy(), y[tr])
     trb = tr & np.isfinite(mk).all(axis=1)
     out["blend"] = make_lr().fit(Xb[trb].to_numpy(), y[trb])
+    out.update(fit_final_ou(d, train_years))
     return out
 
 
@@ -310,4 +311,39 @@ def walk_forward_ou(d: pd.DataFrame, first_year: int = 2004, train_years: int = 
         if trb.sum() > 5000 and teb.sum():
             lr = make_lr().fit(Xb[trb].to_numpy(), y[trb])
             d.loc[teb, "oublend_po25"] = lr.predict_proba(Xb[teb].to_numpy())[:, 1]
+    return d
+
+
+def fit_final_ou(d: pd.DataFrame, train_years: int = 12) -> dict:
+    """Over/under 2.5 models (ratings only, and ratings + market) on recent history."""
+    X = build_ou_features(d)
+    pm = ou_market(d)
+    Xb = X.copy()
+    Xb["mkt"] = _logit(pm)
+    played = d["fthg"].notna() & d["ftag"].notna()
+    cutoff = d["date"].max() - pd.Timedelta(days=365 * train_years)
+    tr = played & eligible(d) & (d["date"] >= cutoff) & X.notna().all(axis=1)
+    y = ((d["fthg"] + d["ftag"]) > 2.5).astype(int).to_numpy()
+    out = {"ouens": make_lr().fit(X[tr].to_numpy(), y[tr])}
+    trb = tr & np.isfinite(pm)
+    out["oublend"] = make_lr().fit(Xb[trb].to_numpy(), y[trb])
+    return out
+
+
+def predict_ou_with(models: dict, d: pd.DataFrame) -> pd.DataFrame:
+    """Add ``oumkt_po25``, ``ouens_po25`` and ``oublend_po25`` for the rows of ``d``."""
+    d = d.copy()
+    X = build_ou_features(d)
+    pm = ou_market(d)
+    d["oumkt_po25"] = pm
+    d["ouens_po25"] = np.nan
+    d["oublend_po25"] = np.nan
+    ok = X.notna().all(axis=1).to_numpy()
+    if ok.any():
+        d.loc[ok, "ouens_po25"] = models["ouens"].predict_proba(X[ok].to_numpy())[:, 1]
+        okb = ok & np.isfinite(pm)
+        if okb.any():
+            Xb = X.copy()
+            Xb["mkt"] = _logit(pm)
+            d.loc[okb, "oublend_po25"] = models["oublend"].predict_proba(Xb[okb].to_numpy())[:, 1]
     return d

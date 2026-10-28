@@ -4,7 +4,8 @@
     footy build      run ratings + walk-forward models, save predictions
     footy report     backtests + accuracy tables + static HTML dashboard
     footy backtest   run one strategy and print its summary
-    footy predict    predictions + value for upcoming fixtures
+    footy upcoming   refresh results + fixtures, probabilities and research picks, paper-trading ledger
+    footy predict    same as `upcoming --no-fetch`
     footy matchup    predict any match-up from the latest ratings
     footy tune       grid-search rating hyper-parameters on the development window
     footy confirm    re-run the pre-registered market-surprise test (docs/PREREGISTRATION.md)
@@ -83,18 +84,30 @@ def _backtest(args) -> None:
             bets.to_csv(args.out, index=False)
 
 
-def _predict(args) -> None:
-    from .pipeline import upcoming
+def _upcoming(args) -> None:
+    from . import upcoming
 
-    fx = upcoming()
-    if fx.empty:
-        print("no upcoming fixtures - run `footy fetch` (needs football-data.co.uk access) "
-              "then `footy build`")
-        return
-    cols = ["date", "league", "home", "away", "blend_ph", "blend_pd", "blend_pa",
-            "best_h", "best_d", "best_a", "ev_h", "ev_d", "ev_a"]
-    cols = [c for c in cols if c in fx]
-    print(fx[cols].round(3).to_string(index=False))
+    meta = upcoming.run(fetch=not args.no_fetch)
+    print(f"{meta['fixtures']} fixtures scored (results through {meta['results_through']}); "
+          f"research picks: F1 {meta['f1_picks']}, F2 {meta['f2_picks']}")
+    t = pd.read_csv(upcoming.OUT_DIR / "fixtures.csv")
+    if len(t):
+        cols = ["date", "league", "home", "away", "mkt_ph", "res_ph", "blend_ph", "oublend_po25",
+                "f1_pick", "f2_pick"]
+        show = t[[c for c in cols if c in t]].copy()
+        for c in ("mkt_ph", "res_ph", "blend_ph", "oublend_po25"):
+            if c in show:
+                show[c] = (show[c] * 100).round(0)
+        show["date"] = show["date"].astype(str).str[:10]
+        print(show.fillna("").to_string(index=False))
+    led = meta["ledger"]
+    for rule in ("F1", "F2"):
+        r = led.get(rule)
+        if r:
+            print(f"ledger {rule}: settled {r.get('settled', 0)}, pending {r.get('pending', 0)}"
+                  + (f", ROI {r['roi']:+.1%}" if "roi" in r else "")
+                  + (f", avg CLV {r['avg_clv']:+.1%} over {r['clv_bets']}" if "avg_clv" in r else ""))
+    print(f"open {upcoming.OUT_DIR / 'index.html'}")
 
 
 def _matchup(args) -> None:
@@ -176,8 +189,13 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--out", help="write bets to CSV")
     t.set_defaults(func=_backtest)
 
-    pr = sub.add_parser("predict", help="upcoming fixtures")
-    pr.set_defaults(func=_predict)
+    up = sub.add_parser("upcoming", help="refresh results, pull fixtures, score them with the "
+                                         "models and research rules, update the paper-trading ledger")
+    up.add_argument("--no-fetch", action="store_true", help="use stored results and fixtures")
+    up.set_defaults(func=_upcoming)
+
+    pr = sub.add_parser("predict", help="same as `upcoming --no-fetch`")
+    pr.set_defaults(func=lambda x: _upcoming(argparse.Namespace(no_fetch=True)))
 
     mu = sub.add_parser("matchup", help="predict any match-up")
     mu.add_argument("league", choices=sorted(leagues.LEAGUES))

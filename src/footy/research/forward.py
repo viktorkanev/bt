@@ -54,7 +54,36 @@ def freeze(d: pd.DataFrame | None = None, path: Path = FROZEN) -> dict:
     return spec
 
 
-def _summ(ret: np.ndarray, odds: np.ndarray, clv: np.ndarray | None = None) -> dict:
+CLOSING_BOOKS = ("psc", "avgc", "b365c", "maxc")
+
+
+def closing_value(sub: pd.DataFrame, cols: tuple[str, str], side: np.ndarray,
+                  line_ok: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Closing-line value of each bet against the sharpest closing price available.
+
+    Pinnacle closing odds disappeared from football-data.co.uk after Pinnacle shut its
+    public API (July 2025), so fall back to the market-average, then Bet365, closing
+    price. Returns (clv, benchmark book) per row; NaN where no closing price exists.
+    """
+    clv = np.full(len(sub), np.nan)
+    used = np.array([""] * len(sub), dtype=object)
+    odds = sub["odds"].to_numpy(dtype=float)
+    for bk in CLOSING_BOOKS:
+        ca, cb = f"{bk}_{cols[0]}", f"{bk}_{cols[1]}"
+        if ca not in sub or cb not in sub:
+            continue
+        fair = market.devig(sub[[ca, cb]].to_numpy(dtype=float), "power")
+        p = np.where(side == 0, fair[:, 0], fair[:, 1])
+        ok = np.isnan(clv) & np.isfinite(p)
+        if line_ok is not None:
+            ok &= line_ok
+        clv = np.where(ok, odds * p - 1, clv)
+        used = np.where(ok, bk, used)
+    return clv, used
+
+
+def _summ(ret: np.ndarray, odds: np.ndarray, clv: np.ndarray | None = None,
+          clv_book: np.ndarray | None = None) -> dict:
     n = len(ret)
     if n == 0:
         return {"bets": 0}
@@ -68,6 +97,10 @@ def _summ(ret: np.ndarray, odds: np.ndarray, clv: np.ndarray | None = None) -> d
         out["clv_bets"] = int(c.size)
         out["avg_clv"] = float(c.mean())
         out["clv_p_value"] = float(stats.t.sf(c.mean() / (c.std(ddof=1) / np.sqrt(c.size)), c.size - 1))
+        out["beat_close_rate"] = float((c > 0).mean())
+        if clv_book is not None:
+            vals, counts = np.unique(clv_book[np.isfinite(clv)], return_counts=True)
+            out["clv_benchmark"] = {str(v): int(n) for v, n in zip(vals, counts)}
     return out
 
 
@@ -97,9 +130,7 @@ def _f1(d: pd.DataFrame, spec: dict) -> pd.DataFrame:
         over = (sub["fthg"] + sub["ftag"]) > 2.5
         win = np.where(jj == 0, over, ~over)
         sub["ret"] = np.where(played, np.where(win, sub["odds"] - 1, -1.0), np.nan)
-        if {"psc_o25", "psc_u25"} <= set(sub.columns):
-            fair = market.devig(sub[["psc_o25", "psc_u25"]].to_numpy(), "power")
-            sub["clv"] = sub["odds"] * fair[np.arange(len(sub)), jj] - 1
+        sub["clv"], sub["clv_book"] = closing_value(sub, ("o25", "u25"), jj)
         rows.append(sub)
     return pd.concat(rows) if rows else pd.DataFrame()
 
@@ -139,10 +170,9 @@ def _f2(d: pd.DataFrame, spec: dict) -> pd.DataFrame:
         stl = ah_settle((sub["fthg"] - sub["ftag"]).fillna(0).to_numpy(), sub["ah_line"].to_numpy())
         stl = np.where(sub["side"] == 0, stl, -stl)
         sub["ret"] = np.where(played, np.where(stl > 0, stl * (sub["odds"] - 1), stl), np.nan)
-        if {"psc_ahh", "psc_aha"} <= set(sub.columns) and sub["psc_ahh"].notna().any():
-            fair = market.devig(sub[["psc_ahh", "psc_aha"]].to_numpy(), "power")
-            same_line = sub["ahc_line"].isna() | (sub["ahc_line"] == sub["ah_line"])
-            sub["clv"] = np.where(same_line, sub["odds"] * fair[np.arange(len(sub)), sub["side"]] - 1, np.nan)
+        same_line = (sub["ahc_line"].isna() | (sub["ahc_line"] == sub["ah_line"])).to_numpy()
+        sub["clv"], sub["clv_book"] = closing_value(sub, ("ahh", "aha"), sub["side"].to_numpy(),
+                                                    same_line)
         rows.append(sub)
     return pd.concat(rows) if rows else pd.DataFrame()
 
@@ -165,7 +195,8 @@ def evaluate(d: pd.DataFrame | None = None, out_dir: Path = OUT_DIR,
     res = {"since": str(pd.Timestamp(since).date()), "matches_after_freeze": int(len(d)),
            "played_after_freeze": int(d["ftr"].notna().sum())}
     keep = ["match_id", "date", "league", "tier", "home", "away", "price_book", "pick", "odds", "ev",
-            "ret", "clv"]
+            "ret", "clv", "clv_book"]
+    res["coverage"] = coverage(d)
     for name, fn in (("F1", _f1), ("F2", _f2)):
         b = fn(d, spec[name])
         if b.empty:
@@ -177,6 +208,24 @@ def evaluate(d: pd.DataFrame | None = None, out_dir: Path = OUT_DIR,
         res[name] = {"pending": int(b["ret"].isna().sum())}
         for price, g in settled.groupby("price_book"):
             res[name][price] = _summ(g["ret"].to_numpy(), g["odds"].to_numpy(),
-                                     g["clv"].to_numpy() if "clv" in g else None)
+                                     g["clv"].to_numpy() if "clv" in g else None,
+                                     g["clv_book"].to_numpy() if "clv_book" in g else None)
     (out_dir / "summary.json").write_text(json.dumps(res, indent=2, default=float), encoding="utf-8")
     return res
+
+
+COVERAGE_COLS = ["oublend_po25", "b365_o25", "max_o25", "avg_o25", "ps_o25", "avgc_o25", "psc_o25",
+                 "ah_line", "b365_ahh", "ps_ahh", "avg_ahh", "max_ahh", "avgc_ahh", "psc_ahh",
+                 "d_fin_luck", "x_lh"]
+
+
+def coverage(d: pd.DataFrame) -> dict:
+    """Share of post-freeze matches with each input, by tier group (for diagnosing gaps)."""
+    out = {}
+    tg = d["tier"].clip(upper=3).map({1: "top flights", 2: "second tiers", 3: "tiers 3-5"})
+    for name, g in d.groupby(tg):
+        out[name] = {"matches": int(len(g)),
+                     **{c: round(float(g[c].notna().mean()), 2) for c in COVERAGE_COLS if c in g}}
+    from ..data import sources
+    out["unrecognised_odds_columns"] = sources.unmapped_columns()
+    return out

@@ -288,25 +288,77 @@ elif page == "Match predictor":
 
 # ------------------------------------------------------------------ upcoming
 elif page == "Upcoming & value":
+    from footy import upcoming
+
     st.title("Upcoming fixtures")
-    fx = pipeline.upcoming(D)
-    if fx.empty:
-        st.info("No fixtures loaded. Run `footy fetch` on a machine that can reach football-data.co.uk "
-                "(it downloads fixtures.csv with current odds), then `footy build`.")
+    st.caption("Market = bookmaker probability without margin. Research = market corrected for the "
+               "confirmed luck over-reaction. Model = ratings + market blend. F1/F2 are the frozen "
+               "research rules, still being forward-tested: treat them as paper trades.")
+    c1, c2 = st.columns([1, 3])
+    if c1.button("Refresh results + fixtures"):
+        with st.spinner("Downloading and scoring (about a minute)..."):
+            meta = upcoming.run(fetch=True)
+        st.success(f"{meta['fixtures']} fixtures scored, results through {meta['results_through']}")
+    f = upcoming.OUT_DIR / "fixtures.csv"
+    if not f.exists():
+        st.info("Run `footy upcoming` (or press the button) to pull fixtures. football-data.co.uk "
+                "publishes them with odds around Tuesday and Friday.")
         st.stop()
-    min_ev = st.slider("Flag value at EV of at least", 0.0, 0.15, 0.03, 0.005)
-    show = fx[["date", "league", "home", "away", "blend_ph", "blend_pd", "blend_pa", "pxg_po25",
-               "best_h", "best_d", "best_a", "ev_h", "ev_d", "ev_a"]].copy()
-    show["value"] = show[["ev_h", "ev_d", "ev_a"]].max(axis=1)
-    show = show.sort_values(["date", "league"])
-    st.dataframe(show.style.format({c: "{:.1%}" for c in ("blend_ph", "blend_pd", "blend_pa",
-                                                          "pxg_po25")}
-                                   | {c: "{:+.1%}" for c in ("ev_h", "ev_d", "ev_a", "value")})
-                 .highlight_between(subset=["value"], left=min_ev, right=10, color="#cde2fb"),
-                 hide_index=True, use_container_width=True)
-    if "adjusted" in fx and fx["adjusted"].str.len().gt(0).any():
-        st.caption("Team-news adjustments applied: " +
-                   "; ".join(sorted(set(fx.loc[fx['adjusted'] != '', 'adjusted']))))
+    t = pd.read_csv(f, parse_dates=["date"])
+    meta = json.loads((upcoming.OUT_DIR / "summary.json").read_text(encoding="utf-8"))
+    c2.caption(f"Generated {meta['generated']} · results through {meta['results_through']}")
+    led = meta.get("ledger", {})
+    m = st.columns(4)
+    for i, rule in enumerate(("F1", "F2")):
+        r = led.get(rule, {})
+        m[2 * i].metric(f"{rule} settled / pending", f"{r.get('settled', 0)} / {r.get('pending', 0)}")
+        m[2 * i + 1].metric(f"{rule} ROI · avg CLV",
+                            (f"{r['roi']:+.1%}" if "roi" in r else "–") + " · "
+                            + (f"{r['avg_clv']:+.1%}" if "avg_clv" in r else "–"))
+    if t.empty:
+        st.info("No fixtures in the latest download.")
+        st.stop()
+    def pct(x):
+        return "–" if pd.isna(x) else f"{x:.0%}"
+
+    def pick_text(r):
+        out = []
+        names = {"ps": "Pinnacle", "b365": "Bet365", "max": "best price", "avg": "market avg"}
+        if isinstance(r.get("f1_pick"), str) and r["f1_pick"]:
+            out.append(f"F1 {r['f1_pick']} @ {r['f1_odds']:.2f} ({names.get(r['f1_book'], r['f1_book'])}, "
+                       f"edge {r['f1_ev']:+.1%})")
+        if isinstance(r.get("f2_pick"), str) and r["f2_pick"]:
+            out.append(f"F2 {r['f2_pick']} @ {r['f2_odds']:.2f} ({names.get(r['f2_book'], r['f2_book'])}, "
+                       f"luck signal {r['f2_signal']:+.1%})")
+        return " · ".join(out)
+
+    t["picks"] = t.apply(pick_text, axis=1)
+    t["kickoff"] = t["date"].dt.strftime("%a %d %b") + " " + t["time"].fillna("").astype(str).str[:5]
+    picks = t[t["picks"] != ""]
+    st.subheader(f"Research picks ({len(picks)})")
+    if len(picks):
+        st.dataframe(picks[["kickoff", "league", "home", "away", "picks"]], hide_index=True,
+                     use_container_width=True)
+    st.subheader("All fixtures")
+    lg = st.multiselect("Leagues", sorted(t["league"].unique()), format_func=league_label)
+    show = (t[t["league"].isin(lg)] if lg else t).copy()
+    view = pd.DataFrame({
+        "kickoff": show["kickoff"], "league": show["league"], "home": show["home"], "away": show["away"],
+        "market H/D/A": [f"{pct(a)} / {pct(b)} / {pct(c)}" for a, b, c in
+                         zip(show["mkt_ph"], show["mkt_pd"], show["mkt_pa"])],
+        "research H/D/A": [f"{pct(a)} / {pct(b)} / {pct(c)}" for a, b, c in
+                           zip(show["res_ph"], show["res_pd"], show["res_pa"])],
+        "model H/D/A": [f"{pct(a)} / {pct(b)} / {pct(c)}" for a, b, c in
+                        zip(show["blend_ph"], show["blend_pd"], show["blend_pa"])],
+        "luck shift (goals)": show["luck_shift_goals"].map(lambda x: "–" if pd.isna(x) else f"{x:+.2f}"),
+        "over 2.5 market → model": [f"{pct(a)} → {pct(b)}" for a, b in
+                                    zip(show["oumkt_po25"], show["oublend_po25"])],
+        "pick": show["picks"],
+    })
+    st.dataframe(view, hide_index=True, use_container_width=True)
+    if upcoming.LEDGER.exists():
+        with st.expander("Paper-trading ledger"):
+            st.dataframe(pd.read_csv(upcoming.LEDGER), hide_index=True, use_container_width=True)
 
 
 # ------------------------------------------------------------------ ratings

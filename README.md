@@ -58,11 +58,32 @@ GitHub mirror of the same data (no closing odds, no fixtures).
 | `footy build [--no-gbm]` | Run all rating models over history, train walk-forward models, save predictions (about 8 minutes for 240k matches) |
 | `footy report` | Accuracy tables, strategy grid, dev/holdout backtests, HTML report in `reports/latest/` |
 | `footy backtest --market ou25 --model oublend --price max --edge 0.03 --leagues E1,E2,E3` | Backtest one rule and print the summary plus per-league table |
-| `footy predict` | Probabilities, fair odds and value flags for upcoming fixtures |
+| `footy upcoming [--no-fetch]` | Refresh this season's results, pull fixtures with odds, score them (market, research-adjusted and model probabilities, F1/F2 picks), update the paper-trading ledger. Writes `reports/upcoming/index.html` |
+| `footy predict` | Same as `footy upcoming --no-fetch` |
 | `footy matchup E0 Arsenal Chelsea` | Predict any match-up from the latest ratings |
 | `footy tune` | Re-tune rating hyper-parameters on the 2003-2013 development window |
 | `footy confirm [--window dev\|holdout]` | Re-run the pre-registered market-surprise test |
 | `footy forward` | Score the frozen rules (`config/forward_rules.json`) on matches after 2026-09-03 |
+
+### Weekly routine
+
+football-data.co.uk publishes fixtures with odds around **Tuesday** (midweek games)
+and **Friday** (weekend games). Run `footy upcoming` after each update:
+
+1. it refreshes this season's results and settles earlier paper trades;
+2. it scores the new fixtures and logs new F1/F2 picks with the price available now
+   (`reports/research/forward/ledger.csv`, first price seen is kept);
+3. open `reports/upcoming/index.html` or the dashboard's *Upcoming & value* page.
+
+Rebuild the models (`footy build`, ~10 min) once a month or so; ratings themselves are
+recomputed from the latest results on every `footy upcoming` run.
+
+To run it automatically on Windows (Task Scheduler, Tuesdays and Fridays at 18:00):
+
+```bat
+schtasks /Create /TN "footy upcoming" /SC WEEKLY /D TUE,FRI /ST 18:00 ^
+  /TR "cmd /c cd /d C:\path\to\bt && footy upcoming > reports\upcoming\last_run.log 2>&1"
+```
 
 ### Dashboard pages
 
@@ -73,7 +94,9 @@ GitHub mirror of the same data (no closing odds, no fixtures).
 * **Model accuracy**: RPS by model and league, calibration plots.
 * **Match predictor**: any two teams, all models, scoreline grid, O/U and
   handicap fair odds, team-news sliders.
-* **Upcoming & value**: fixture predictions with expected value at the best price.
+* **Upcoming & value**: market vs research-adjusted vs model probabilities for every
+  fixture, the F1/F2 research picks, and the paper-trading ledger (ROI and closing-line
+  value). Has a button to refresh results and fixtures.
 * **Ratings** and **Team news** (manual adjustments from `config/adjustments.yaml`).
 
 ## How it works

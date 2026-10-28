@@ -186,6 +186,44 @@ def _extra_code(country: str, league_name: str, lookup: dict[str, str]) -> str |
     return _COUNTRY_TO_CODE.get(country.strip().lower()) or lookup.get(league_name.strip().lower())
 
 
+def unmapped_columns(raw_dir: Path | None = None, sample: tuple = ("E1", "E2", "SP2", "D2")) -> list[str]:
+    """Columns in this season's football-data.co.uk files that the schema ignores.
+
+    Used to spot new bookmakers (e.g. a Betfair exchange price) or renamed columns.
+    """
+    from .schema import FD_MAP
+    from .store import RAW_DIR
+
+    raw_dir = Path(raw_dir or RAW_DIR) / "football-data"
+    known = {c for cands in FD_MAP.values() for c in cands}
+    known |= {"Div", "Date", "Time", "HomeTeam", "AwayTeam", "Home", "Away", "HT", "AT", "Referee",
+              "Country", "League", "Season"}
+    seen: set[str] = set()
+    code = fd_season_code(current_season_start())
+    for lg in sample:
+        f = raw_dir / f"{lg}_{code}.csv"
+        if f.exists():
+            seen |= set(_read_csv_bytes(f.read_bytes()).columns)
+    return sorted(c for c in seen - known if c and not c.startswith("Unnamed"))
+
+
+def refresh_current_season(matches: pd.DataFrame, raw_dir: Path) -> pd.DataFrame:
+    """Re-download only the current season (and the extra-league files) and merge.
+
+    Much faster than a full ``fetch`` and enough to bring ratings up to date
+    before predicting fixtures. Only valid for a store built from football-data.co.uk
+    (the mirror uses different team names).
+    """
+    cur = current_season_start()
+    new = fetch_football_data(raw_dir, first_season=cur, refresh_recent=1)
+    extra = {lg.code for lg in leagues.LEAGUES.values() if lg.extra}
+    replaced = new["league"].unique()
+    drop = matches["league"].isin(replaced) & (
+        matches["league"].isin(extra) | (matches["season_start"] >= cur))
+    merged = pd.concat([matches[~drop], new], ignore_index=True)
+    return finalise(merged)
+
+
 def load_matches(raw_dir: Path, source: str = "auto", **kw) -> tuple[pd.DataFrame, str]:
     """Return (matches, source_used). ``source`` is auto|football-data|mirror."""
     if source in ("auto", "football-data"):
