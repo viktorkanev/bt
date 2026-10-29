@@ -61,6 +61,10 @@ class Watcher:
         if self.scanners:
             from .pm.ledger import PMBook
             self.pm = PMBook(cfg["server"]["db"], cfg)
+        self.recorder = None
+        if cfg.get("recorder", {}).get("enabled"):
+            from .recorder import Recorder
+            self.recorder = Recorder(cfg)
         self.scan_next: dict[str, float] = {}
         self.scan_info: dict[str, dict] = {}
         self.next_pm_settle = 0.0
@@ -91,18 +95,20 @@ class Watcher:
         for prov in self.providers:
             if time.time() < self.next_poll.get(prov.name, 0):
                 continue
+            t0, used0, fresh, err = time.time(), getattr(prov, "used", None), [], ""
             try:
                 fresh = prov.poll(self.index, now)
                 with self.lock:
                     for q in fresh:
                         self.quotes[(q.event, q.market, q.line, q.book, q.outcome)] = q
                 self.last_poll[prov.name] = now.isoformat(timespec="seconds")
-                self.errors[prov.name] = getattr(prov, "last_error", "")
+                self.errors[prov.name] = err = getattr(prov, "last_error", "") or ""
                 polled = True
                 log.info("%s: %d quotes", prov.name, len(fresh))
             except Exception as e:  # noqa: BLE001
-                self.errors[prov.name] = str(e)
+                self.errors[prov.name] = err = str(e)
                 log.warning("%s poll failed: %s", prov.name, e)
+            self._record(prov, now, fresh, time.time() - t0, used0, err)
             n_active = len(prov.active_sports(now)) if hasattr(prov, "active_sports") else 0
             self.next_poll[prov.name] = time.time() + prov.interval(n_active, now)
         if self.paper:
@@ -137,7 +143,9 @@ class Watcher:
             if recent:
                 continue  # the regular poll was close enough to kickoff
             try:
+                t0, used0 = time.time(), getattr(feed, "used", None)
                 fresh = feed.event_odds(self.index, sport, oid)
+                self._record(feed, now, fresh, time.time() - t0, used0, "")
                 with self.lock:
                     for q in fresh:
                         self.quotes[(q.event, q.market, q.line, q.book, q.outcome)] = q
@@ -190,6 +198,17 @@ class Watcher:
         self.state.prune(now - timedelta(days=7))
         return sent
 
+    def _record(self, prov, now, quotes, seconds: float, used_before, error: str) -> None:
+        """Feed recorder: never lets a recording problem stop the polling."""
+        if not self.recorder:
+            return
+        try:
+            used = getattr(prov, "used", None)
+            requests = (used - used_before) if (used is not None and used_before is not None) else None
+            self.recorder.record(prov.name, now, quotes, self.index, seconds, requests, error)
+        except Exception as e:  # noqa: BLE001
+            log.warning("feed recorder: %s", e)
+
     # ------------------------------------------------ prediction markets
     def run_scanners(self, now=None, force: bool = False) -> list:
         """Run each prediction-market strategy that is due; record and announce new positions."""
@@ -219,6 +238,12 @@ class Watcher:
                 log.warning("%s scan failed: %s", sc.name, e)
             info["events"] = getattr(sc, "last_count", 0)
             info["seconds"] = round(time.time() - t0, 1)
+            if self.recorder:
+                try:
+                    self.recorder.record_scan(sc.name, now, info["seconds"], info["events"], info["signals"],
+                                              info["error"])
+                except Exception as e:  # noqa: BLE001
+                    log.warning("feed recorder: %s", e)
             self.scan_info[sc.name] = info
             self.scan_next[sc.name] = time.time() + sc.interval_s
         if self.pm and (force or time.time() >= self.next_pm_settle):
@@ -343,6 +368,10 @@ def render(w: Watcher) -> str:
                        for n, i in st.get("scanners", {}).items() if i.get("error"))
         paper_html += (f"<a class='chip paperlink' href='/pm'><b>Prediction markets →</b><br>"
                        f"<span class='small'>{' · '.join(parts)}</span>{errs}</a>")
+    if w.recorder:
+        paper_html += (f"<a class='chip paperlink' href='/feeds'><b>Feeds compared →</b><br>"
+                       f"<span class='small'>what each odds feed delivers, recorded "
+                       f"{w.recorder.keep_days:g} days ({w.recorder.size_mb():.0f} MB)</span></a>")
     prow = []
     for row in w.pick_status:
         pk, b = row["pick"], row["best"]
@@ -428,6 +457,13 @@ def make_handler(w: Watcher):
             elif path == "/api/paper.csv" and w.paper:
                 from .paper_web import paper_csv
                 self._send(200, paper_csv(w), "text/csv")
+            elif path == "/feeds" and w.recorder:
+                from .feeds_web import render_feeds
+                days = float((qs.get("days") or ["7"])[0] or 7)
+                self._send(200, render_feeds(w, CSS, days), "text/html")
+            elif path == "/api/feeds" and w.recorder:
+                days = float((qs.get("days") or ["7"])[0] or 7)
+                self._send(200, json.dumps(w.recorder.report(utcnow(), days, w.paper), default=str))
             elif path == "/pm" and w.pm:
                 from .pm.web import render_pm
                 self._send(200, render_pm(w, CSS, qs.get("strategy", [""])[0]), "text/html")

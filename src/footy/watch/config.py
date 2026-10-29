@@ -68,6 +68,8 @@ DEFAULTS: dict = {
     "file": {"enabled": False, "path": "odds.json", "interval_seconds": 30},
     "notify": {"console": True, "telegram_token": "", "telegram_chat_id": "", "ntfy_topic": "",
                "ntfy_server": "https://ntfy.sh"},
+    # every poll and every price change per feed, to compare what each feed is worth (page /feeds)
+    "recorder": {"enabled": True, "db": "", "keep_days": 30},   # db "" = footy-feeds.db next to server.db
     # prediction-market strategies (Polymarket, no bookmaker feed needed)
     "pm": {"bankroll": 1000.0,       # imaginary dollars per strategy
            "fee_rate": 0.05,         # taker fee rate: rate * p * (1 - p) per share
@@ -146,6 +148,8 @@ def load(path: str | None) -> dict:
             cfg["server"][key] = str(base / cfg["server"][key])
     if cfg["file"].get("path") and not Path(cfg["file"]["path"]).is_absolute():
         cfg["file"]["path"] = str(base / cfg["file"]["path"])
+    if cfg["recorder"]["db"] and not Path(cfg["recorder"]["db"]).is_absolute():
+        cfg["recorder"]["db"] = str(base / cfg["recorder"]["db"])
     if not Path(cfg["oddspapi"]["cache_file"]).is_absolute():
         cfg["oddspapi"]["cache_file"] = str(base / cfg["oddspapi"]["cache_file"])
     return cfg

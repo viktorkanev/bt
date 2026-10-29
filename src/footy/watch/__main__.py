@@ -1,4 +1,4 @@
-"""python -m footy.watch {run,check,scan,sports,polymarket,oddspapi,notify-test,init-config,push,paper,paper-reset}"""
+"""python -m footy.watch {run,check,feeds,scan,sports,polymarket,oddspapi,notify-test,init-config,push,paper,paper-reset}"""
 
 from __future__ import annotations
 
@@ -36,6 +36,9 @@ def main(argv: list[str] | None = None) -> int:
                                                     "rugbyunion, rugbyleague, americanfootball")
     p.add_argument("--save", default="", help="folder to save the raw responses in (send them if parsing fails)")
     p.add_argument("--bookmakers", action="store_true", help="also list bookmaker slugs (1 request)")
+    p = sub.add_parser("feeds", help="compare what each odds feed delivered (from the feed recorder)")
+    p.add_argument("--config", default="watch.toml")
+    p.add_argument("--days", type=float, default=7.0)
     p = sub.add_parser("scan", help="run the prediction-market strategies once and print what they find")
     p.add_argument("--config", default="watch.toml")
     p.add_argument("--strategy", choices=["consistency", "weather"], default=None)
@@ -76,6 +79,36 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{s.get('group', ''):<16} {s['key']:<45} {s.get('title', ''):<35} "
                   f"{'active' if s.get('active') else '':<7} {mapped}")
         print(f"credits remaining: {prov.remaining}")
+        return 0
+    if args.cmd == "feeds":
+        from .core import utcnow
+        from .paper import PaperBook
+        from .recorder import Recorder, minutes_between, monthly_requests
+        rec = Recorder(cfg)
+        paper = PaperBook(cfg["server"]["db"], cfg) if cfg["paper"].get("enabled") else None
+        rep = rec.report(utcnow(), args.days, paper)
+        print(f"last {args.days:g} days, recorder file {rep['db_mb']} MB")
+        for name, d in sorted(rep["providers"].items()):
+            if name.startswith("pm:"):
+                print(f"\n{name}: {d['polls']} scans, {d['avg_seconds']} s each, {d['errors']} errors")
+                continue
+            print(f"\n{name}: {d['polls']} checks ({d['errors']} errors), {d['avg_seconds']} s each")
+            print(f"  matches {d['matches_total']} ({', '.join(f'{k} {v}' for k, v in d['matches'].items())}), "
+                  f"only here {d['only_here']}")
+            print(f"  books {len(d['books'])}: {', '.join(b['book'] for b in d['books'][:12])}")
+            print(f"  only from it: {', '.join(d['exclusive_books']) or '-'}; "
+                  f"price changes per selection-hour {d['changes_per_selection_hour']}")
+            for other, x in d["lead"].items():
+                print(f"  vs {other}: {x['median_minutes_ahead']:+.1f} min ahead (median of {x['samples']})")
+            if d.get("paper_bets_only_here") is not None:
+                print(f"  paper bets only possible through it: {d['paper_bets_only_here']}, expected "
+                      f"{d['paper_ev_only_here']}, profit {d['paper_profit_only_here']}")
+            if d.get("requests_per_poll"):
+                r = d["requests_per_poll"]
+                print(f"  {r:g} requests per check -> a month: " +
+                      ", ".join(f"every {m} min {monthly_requests(r, m):,}" for m in (5, 15, 30, 60)))
+                print("  allowance -> check every: " +
+                      ", ".join(f"{a:,}/mo {minutes_between(r, a, 10):.0f} min" for a in (250, 5000, 20000, 100000)))
         return 0
     if args.cmd == "scan":
         from .core import utcnow

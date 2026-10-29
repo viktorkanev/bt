@@ -139,3 +139,10 @@ min_edge = 0.08
 sigma_f = 1.6             # extra uncertainty in °F for station vs model grid
 stake = 10
 # stations = { "Paris" = "LFPG" }   # only if a market's rules don't name its station
+
+# ------------------------------------------------------------- feed recorder
+# Every check and every price change per feed, to compare what each feed is worth.
+# Page: http://<pi>:8080/feeds   Terminal: python3 -m footy.watch feeds --days 7
+[recorder]
+enabled = true
+keep_days = 30            # roughly 1-5 MB a day with several feeds

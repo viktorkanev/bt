@@ -257,3 +257,26 @@ paper trading show whether it works.
 
 The scans run in their own thread, so they never slow the odds feeds down. Each
 uses filtered, small requests (one scan: a few MB), which a Pi Zero 2 W handles.
+
+## 10. Which feed to pay for: the feed recorder
+
+The watcher records every check and every price change of every feed (on by
+default, kept 30 days in `footy-feeds.db` next to the main database; only changes
+are written, about 1-5 MB a day). Open `http://raspberrypi.local:8080/feeds` or run
+`python3 -m footy.watch feeds --days 7`. Per feed it shows:
+
+* **Coverage**: matches it listed, by sport, and how many no other feed had; the
+  bookmakers it supplied and the ones only it supplied.
+* **Who moves first**: where two feeds carry the same bookmaker (Pinnacle through
+  The Odds API and OddsPapi), the median minutes one had a new price before the other.
+* **Paper bets that needed it**: bets at books only that feed supplied, with their
+  expected value, profit and CLV: what you'd lose without it.
+* **Requests and plans**: requests (or credits) per check as measured with your
+  settings, what a month needs at 5/15/30/60-minute checks, and how often 250,
+  5,000, 20,000 or 100,000 a month would let it check.
+
+OddsPapi's cost per check is sports x tournament groups (10 per request) x
+bookmakers (one per request). With 3 bookmakers and up to 20 tournaments: 6 requests
+per sport, so 20,000 a month checks one sport about every 13 minutes, two sports
+about every 26. Run the free plans side by side for a week, then let the numbers
+on this page decide.
