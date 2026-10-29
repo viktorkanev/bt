@@ -220,19 +220,30 @@ class Recorder:
 
     def _contribution(self, out: dict, paper, since: str, supplied_by: dict) -> None:
         """Paper bets that needed this feed, i.e. what you'd lose without it: placed at a book only it
-        supplies, or on a match only it listed. A bet can need more than one feed."""
+        supplies, or on a match only it listed. A bet can need more than one feed.
+
+        The same bet placed under several venues counts once, and an arbitrage counts once with all
+        its legs: one leg alone wins or loses big, the arbitrage as a whole doesn't."""
         try:
             bets = [b for b in paper.bets() if b["placed"] >= since]
         except Exception:  # noqa: BLE001
             return
-        listers = [self._listers(b) for b in bets]
+        units: dict[tuple, list[dict]] = {}
+        for b in bets:
+            if b["strategy"] == "arb":
+                units.setdefault(("arb", b["event_id"], b["market"], b["line"]), []).append(b)
+            else:
+                units.setdefault((b["strategy"], b["event_id"], b["market"], b["line"], b["outcome"], b["book"]), [b])
+        groups = [(legs, self._listers(legs[0])) for legs in units.values()]
         for prov, d in out.items():
-            mine = [b for b, ls in zip(bets, listers) if supplied_by.get(b["book"]) == {prov} or ls == {prov}]
-            settled = [b for b in mine if b["status"] not in ("open", "void")]
-            clv = [b["clv"] for b in mine if b["clv"] is not None]
+            mine = [legs for legs, ls in groups
+                    if ls == {prov} or any(supplied_by.get(b["book"]) == {prov} for b in legs)]
+            settled = [legs for legs in mine if all(b["status"] != "open" for b in legs)
+                       and any(b["status"] != "void" for b in legs)]
+            clv = [statistics.mean(cs) for legs in mine if (cs := [b["clv"] for b in legs if b["clv"] is not None])]
             d["paper_bets_only_here"] = len(mine)
-            d["paper_ev_only_here"] = round(sum(b["stake"] * b["ev"] for b in mine), 2)
-            d["paper_profit_only_here"] = round(sum(b["profit"] for b in settled), 2)
+            d["paper_ev_only_here"] = round(sum(b["stake"] * b["ev"] for legs in mine for b in legs), 2)
+            d["paper_profit_only_here"] = round(sum(b["profit"] or 0 for legs in settled for b in legs), 2)
             d["paper_avg_clv_only_here"] = round(statistics.mean(clv), 4) if clv else None
 
     def _listers(self, bet: dict) -> set:

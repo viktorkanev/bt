@@ -95,6 +95,36 @@ def test_paper_bets_on_matches_only_one_feed_listed(tmp_path):
     assert rep["oddsapi"]["paper_bets_only_here"] == 0
 
 
+def test_paper_bets_count_once_and_arbitrages_whole(tmp_path):
+    """The same pick under two venues is one bet; an arbitrage counts with all its legs, since a
+    losing leg alone (-54.74) says nothing about the arb (+0.93)."""
+    from footy.watch.paper import PaperBook
+    from footy.watch.rules import Alert
+    c = _cfg(tmp_path)
+    c["paper"]["venues"] = ["best", "polymarket", "arb"]
+    rec = Recorder(c)
+    idx = EventIndex()
+    ev = idx.add("oddsapi", "oa1", "St Mirren", "Hibernian", KO)
+    idx.add("polymarket", "pm1", "St Mirren", "Hibernian", KO)
+    rec.record("polymarket", NOW, [Quote(ev.id, "ou", 2.5, "over", "polymarket", 1.89)], idx)
+    rec.record("oddsapi", NOW, [Quote(ev.id, "ou", 2.5, "under", "unibet_nl", 2.23)], idx)
+    book = PaperBook(c["server"]["db"], c)
+    legs = [{"outcome": "over", "book": "polymarket", "price": 1.89, "net": 1.89, "share": 0.55},
+            {"outcome": "under", "book": "unibet_nl", "price": 2.23, "net": 2.23, "share": 0.45}]
+    book.place([Alert("pick", ev.id, "St Mirren v Hibernian", KO, None, "ou", 2.5, "under", "polymarket",
+                      2.5, 2.4, 0.05, extra={"rule_code": "F1"}),
+                Alert("arb", ev.id, "St Mirren v Hibernian", KO, None, "ou", 2.5, "all", "multi",
+                      1.0092, 0.0, 0.0092, extra={"legs": legs})], idx, NOW)
+    with book.lock:
+        book.db.execute("UPDATE paper_bets SET status='won', profit=15 WHERE strategy='F1'")
+        book.db.execute("UPDATE paper_bets SET status='lost', profit=-54.74 WHERE strategy='arb' AND book='polymarket'")
+        book.db.execute("UPDATE paper_bets SET status='won', profit=55.67 WHERE strategy='arb' AND book='unibet_nl'")
+        book.db.commit()
+    rep = rec.report(NOW + timedelta(hours=1), 7, book)["providers"]
+    assert rep["polymarket"]["paper_bets_only_here"] == 2                    # the pick once, the arb once
+    assert abs(rep["polymarket"]["paper_profit_only_here"] - (15 + 0.93)) < 1e-6
+
+
 def test_plan_maths():
     assert monthly_requests(3, 15) == 3 * 30 * 24 * 4                     # 8,640 a month
     assert abs(minutes_between(3, 20_000) - 30 * 24 * 60 * 3 / 20_000) < 1e-9   # ~6.5 min
