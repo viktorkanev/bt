@@ -107,7 +107,8 @@ other feed supplied. Price changes per selection per hour: how lively its prices
 the median minutes one had a new price before the other. It reflects how often each one polls on your plan.</div>
 {table("<th class='l'>Feeds</th><th class='l'>First</th><th>Minutes ahead</th><th>Prices compared</th>", lead, "Needs two feeds with the same bookmaker.", 4)}
 <h2>Paper bets that needed it</h2>
-<div class="muted small">Bets placed at books only this feed supplied: what you'd lose without it.</div>
+<div class="muted small">Bets placed at books only this feed supplied, or on matches only this feed listed: what
+you'd lose without it. A bet can need more than one feed (a National League match from OddsPapi, priced on Polymarket).</div>
 {table("<th class='l'>Feed</th><th>Bets</th><th>Expected €</th><th>Profit €</th><th>Avg CLV</th>", need, "No paper bets yet.", 5)}
 <h2>Requests and plans</h2>
 <div class="muted small">Measured requests (or credits) per check with your current settings: what a month needs at

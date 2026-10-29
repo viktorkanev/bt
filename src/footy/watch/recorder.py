@@ -9,12 +9,13 @@ Kept in its own SQLite file (``recorder.db``), pruned after ``keep_days``:
 
 ``report()`` turns that into a per-feed comparison: coverage (matches only that feed
 had), books it supplies, how often its prices change, which feed shows a move first
-when two feeds carry the same bookmaker, how many paper bets depended on books only it
-supplies, and the requests a month it needs at a given polling rate.
+when two feeds carry the same bookmaker, how many paper bets depended on books or matches
+only it supplies, and the requests a month it needs at a given polling rate.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import sqlite3
@@ -52,6 +53,8 @@ class Recorder:
         self._last: dict[tuple, float] = {}
         self._events: dict[str, set] = {}
         self._pruned_at = 0.0
+        # feeds that only price matches another feed listed (they never make a match possible on their own)
+        self._followers = {"polymarket"} if cfg.get("polymarket", {}).get("only_known_matches", True) else set()
 
     # ---------------------------------------------------------- writing
     def record(self, provider: str, now: datetime, quotes, index, seconds: float = 0.0,
@@ -215,21 +218,31 @@ class Recorder:
             out[b][a] = {"median_minutes_ahead": round(-med, 1), "samples": len(g)}
         return out
 
-    @staticmethod
-    def _contribution(out: dict, paper, since: str, supplied_by: dict) -> None:
-        """Paper bets placed at books only this feed supplies: what you'd lose without it."""
+    def _contribution(self, out: dict, paper, since: str, supplied_by: dict) -> None:
+        """Paper bets that needed this feed, i.e. what you'd lose without it: placed at a book only it
+        supplies, or on a match only it listed. A bet can need more than one feed."""
         try:
             bets = [b for b in paper.bets() if b["placed"] >= since]
         except Exception:  # noqa: BLE001
             return
+        listers = [self._listers(b) for b in bets]
         for prov, d in out.items():
-            mine = [b for b in bets if supplied_by.get(b["book"]) == {prov}]
+            mine = [b for b, ls in zip(bets, listers) if supplied_by.get(b["book"]) == {prov} or ls == {prov}]
             settled = [b for b in mine if b["status"] not in ("open", "void")]
             clv = [b["clv"] for b in mine if b["clv"] is not None]
             d["paper_bets_only_here"] = len(mine)
             d["paper_ev_only_here"] = round(sum(b["stake"] * b["ev"] for b in mine), 2)
             d["paper_profit_only_here"] = round(sum(b["profit"] for b in settled), 2)
             d["paper_avg_clv_only_here"] = round(statistics.mean(clv), 4) if clv else None
+
+    def _listers(self, bet: dict) -> set:
+        """The feeds that listed the bet's match when it was placed (saved with the bet), leaving out
+        feeds that only price matches another feed listed."""
+        try:
+            sources = json.loads(bet.get("meta") or "{}").get("sources", {})
+        except (ValueError, AttributeError):
+            return set()
+        return set(sources) - self._followers
 
 
 def monthly_requests(requests_per_poll: float, minutes_between_polls: float) -> int:

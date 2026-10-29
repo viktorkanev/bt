@@ -68,6 +68,33 @@ def test_paper_bets_that_needed_a_feed(tmp_path):
     assert rep["oddspapi"]["paper_ev_only_here"] > 0
 
 
+def test_paper_bets_on_matches_only_one_feed_listed(tmp_path):
+    """A National League match only OddsPapi lists: Polymarket prices it only because OddsPapi
+    listed it, and its Pinnacle price is OddsPapi's even though The Odds API has Pinnacle elsewhere."""
+    from footy.watch.paper import PaperBook
+    from footy.watch.rules import Alert
+    c = _cfg(tmp_path)
+    c["paper"]["venues"] = ["best"]
+    rec = Recorder(c)
+    idx = EventIndex()
+    nl = idx.add("oddspapi", "op1", "Forest Green", "Eastleigh", KO)
+    idx.add("polymarket", "pm1", "Forest Green", "Eastleigh", KO)
+    prem = idx.add("oddsapi", "oa1", "Arsenal", "Chelsea", KO)
+    rec.record("oddspapi", NOW, [Quote(nl.id, "ou", 2.5, "under", "pinnacle", 2.6)], idx)
+    rec.record("polymarket", NOW, [Quote(nl.id, "ou", 2.5, "under", "polymarket", 2.78)], idx)
+    rec.record("oddsapi", NOW, [Quote(prem.id, "1x2", None, "home", "pinnacle", 2.0)], idx)
+    book = PaperBook(c["server"]["db"], c)
+    pick = {"rule_code": "F1", "rule": "Lower-league goals"}
+    book.place([Alert("pick", nl.id, "Forest Green v Eastleigh", KO, None, "ou", 2.5, "under", "polymarket",
+                      2.78, 2.5, 0.08, extra=pick),
+                Alert("pick", nl.id, "Forest Green v Eastleigh", KO, None, "ou", 2.5, "over", "pinnacle",
+                      2.3, 2.2, 0.04, extra=pick)], idx, NOW)
+    rep = rec.report(NOW + timedelta(hours=1), 7, book)["providers"]
+    assert rep["oddspapi"]["paper_bets_only_here"] == 2       # the match came only from OddsPapi
+    assert rep["polymarket"]["paper_bets_only_here"] == 1     # the Polymarket price came only from Polymarket
+    assert rep["oddsapi"]["paper_bets_only_here"] == 0
+
+
 def test_plan_maths():
     assert monthly_requests(3, 15) == 3 * 30 * 24 * 4                     # 8,640 a month
     assert abs(minutes_between(3, 20_000) - 30 * 24 * 60 * 3 / 20_000) < 1e-9   # ~6.5 min
